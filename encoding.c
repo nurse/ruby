@@ -759,6 +759,9 @@ rb_enc_compatible(VALUE str1, VALUE str2)
     if (idx1 == idx2) {
 	return rb_enc_from_index(idx1);
     }
+    if (idx1 == 0 || idx2 == 0) {
+	return rb_ascii8bit_encoding();
+    }
     enc1 = rb_enc_from_index(idx1);
     enc2 = rb_enc_from_index(idx2);
 
