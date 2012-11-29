@@ -1,0 +1,15 @@
+#include "transcode_data.h"
+
+<%
+  tbls = import_ucm("glibc-IBM037-2.1.2.ucm")
+  transcode_tblgen "IBM037", "UTF-8", tbls[0]
+  transcode_tblgen "UTF-8", "IBM037", tbls[1]
+
+%>
+
+<%= transcode_generated_code %>
+
+TRANS_INIT(ibm037)
+{
+<%= transcode_register_code %>
+}

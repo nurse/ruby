@@ -967,6 +967,7 @@ end
 
 # the following may be used in different places, so keep them here for the moment
 set_valid_byte_pattern 'ASCII-8BIT', '1byte'
+set_valid_byte_pattern 'IBM037', '1byte'
 set_valid_byte_pattern 'Windows-31J', 'Shift_JIS'
 set_valid_byte_pattern 'eucJP-ms', 'EUC-JP'
 
