@@ -1187,6 +1187,176 @@ opt_enc_index(VALUE enc_name)
     return i;
 }
 
+#ifdef _WIN32
+# define RUBYPATH_GetModuleFileName
+#elif defined(__APPLE__)
+# define RUBYPATH_NSGetExecutablePath
+# include <mach-o/dyld.h>
+#elif defined(__FreeBSD__)
+# define RUBYPATH_sysctl
+# include <sys/sysctl.h>
+# include <errno.h>
+#elif defined(__linux__) || defined(__SunOS_5_10) /* Solaris 10 */
+# define RUBYPATH_procfs "/proc/self/exe"
+#elif defined(__NetBSD__)
+# define RUBYPATH_procfs "/proc/curproc/exe"
+#elif defined(__DragonFly__)
+# define RUBYPATH_procfs "/proc/curproc/file"
+#elif defined(__sun) /* Solaris 9 or prior */
+# define RUBYPATH_getexecname
+#elif defined(_AIX)
+  /*
+   * Maybe AIX should use /proc/<pid>/{psinfo,map,object}
+   * http://pic.dhe.ibm.com/infocenter/aix/v6r1/index.jsp?topic=%2Fcom.ibm.aix.files%2Fdoc%2Faixfiles%2Fproc.htm
+   */
+# define RUBYPATH_dladdr
+# include <dlfcn.h>
+#elif defined(__OpenBSD__)
+# define RUBYPATH_dladdr
+# include <dlfcn.h>
+#endif
+
+#pragma GCC visibility push(default)
+/*
+ * Returns the real absolute path of current executing ruby.
+ * "real" means it doesn't include symlinks in the path.
+ * If the environment doesn't support this, raises NotImplementedError.
+ *
+ * Example in shell:
+ *   % pwd
+ *   /hoge
+ *   % ls -l
+ *   lrwxr-xr-x  1 rubyist users      32 Jan  1 00:00 foo -> /usr/local/bin/ruby
+ *   % ./foo -retc -e'puts Etc.rubypath'
+ *   /usr/local/bin/ruby
+ *   % cd /
+ *   % PATH=/hoge foo -retc -e'puts Etc.rubypath'
+ *   /usr/local/bin/ruby
+ */
+VALUE
+rb_ruby_binpath(void)
+{
+#ifdef RUBYPATH_GetModuleFileName
+    /* http://msdn.microsoft.com/en-us/library/ms683197.aspx */
+    char buf[_MAX_PATH];
+    size_t len;
+    len = (size_t)GetModuleFileName(NULL, buf, sizeof(buf));
+    if (len == 0) rb_sys_fail("Can't get the path of ruby");
+    return rb_filesystem_str_new(buf, len);
+#elif defined(RUBYPATH_NSGetExecutablePath)
+    /*
+     * defined(__APPLE__): returns absolute but symlink; need realpath
+     */
+    VALUE v;
+    uint32_t len = 0;
+    char *buf, *resolved
+    int err;
+    _NSGetExecutablePath(NULL, &len);
+    buf = malloc(len);
+    if (buf == NULL) rb_sys_fail("Can't allocate memory");
+    err = _NSGetExecutablePath(buf, &len);
+    if (err != 0) rb_sys_fail("Can't get the path of ruby");
+    resolved = realpath(buf, NULL);
+    if (resolved == NULL) rb_sys_fail("Can't get the realpath of ruby");
+    v = rb_filesystem_str_new_cstr(resolved);
+    free(buf);
+    free(resolved);
+    return v;
+#elif defined(RUBYPATH_getexecname)
+    /* Solaris */
+    const char *name = getexecname();
+    VALUE result;
+    if (name == NULL) rb_sys_fail("Can't get the path of ruby");
+    if (name[0] == '/') {
+	/* name is absolute path */
+	result = rb_filesystem_str_new_cstr(name);
+    }
+    else {
+	/* name is relative path */
+	/* assume cwd is not changed from exec(2) */
+	char *buf;
+	buf = getcwd(NULL, 0);
+	if (buf == NULL) rb_sys_fail("Can't getcwd during getting the path of ruby");
+	result = rb_filesystem_str_new_cstr(buf);
+	free(buf);
+	rb_str_buf_cat2(result, "/");
+	rb_str_buf_cat2(result, name);
+	/* realpath may be required after this */
+    }
+#elif defined(RUBYPATH_sysctl)
+    /*
+     * defined(__FreeBSD__): returns absolute
+     */
+    VALUE v;
+    int mib[4], err;
+    char *buf;
+    size_t len = 0;
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_PROC;
+    mib[2] = KERN_PROC_PATHNAME;
+    mib[3] = -1;
+    err = sysctl(mib, 4, NULL, &len, NULL, 0);
+    if (err) rb_sys_fail("Can't get the path info of ruby");
+    buf = malloc(len);
+    if (buf == NULL) rb_sys_fail("Can't allocate memory");
+    err = sysctl(mib, 4, buf, &len, NULL, 0);
+    if (err) {
+	free(buf);
+	rb_sys_fail("Can't get the path of ruby");
+    }
+    len--;
+    v = rb_filesystem_str_new(buf, len);
+    free(buf);
+    return v;
+#elif defined(RUBYPATH_procfs)
+    /*
+     * defined(__linux__): returns absolute
+     * defined(__NetBSD__): returns absolute
+     * defined(__DragonFly__): returns absolute
+     */
+    VALUE v;
+    size_t bufsiz = PATH_MAX;
+    char buf[PATH_MAX];
+    ssize_t len = 0;
+    if (buf == NULL) rb_sys_fail("Can't allocate memory");
+    len = readlink(RUBYPATH_procfs, buf, bufsiz);
+    if (len < 0) {
+	rb_sys_fail("Can't get the path of ruby");
+    }
+    /* assume PATH_MAX is enough length */
+    v = rb_filesystem_str_new(buf, len);
+    return v;
+#elif defined(RUBYPATH_dladdr)
+    /*
+     * defined(__FreeBSD__): returns absolute but symlink; need realpath
+     * defined(__NetBSD__): returns relative; can't use
+     * defined(__OpenBSD__): returns relative; can't use
+     * defined(__DragonFly__): returns relative; can't use
+     * defined(__sun__):
+     * defined(_AIX):
+     * defined(__APPLE__): returns absolute but symlink; need realpath
+     *
+     * On relative platform, dln_find_exe can be used.
+     *
+     */
+    VALUE v;
+    char *resolved;
+    Dl_info info;
+    extern char **environ; /* environ should be in "ruby" not libruby */
+    if (dladdr(&environ, &info) == 0)
+	rb_sys_fail("Can't get the path of ruby");
+    resolved = realpath(info.dli_fname, NULL); /* realpath(, NULL) is platform dependent */
+    if (resolved == NULL) rb_sys_fail("Can't get the realpath of ruby");
+    v = rb_filesystem_str_new_cstr(resolved);
+    free(resolved);
+    return v;
+#else
+    rb_notimplement();
+    return Qnil; /* dummy */
+#endif
+}
+#pragma GCC visibility pop
+
 #define rb_progname (GET_VM()->progname)
 VALUE rb_argv0;
 
