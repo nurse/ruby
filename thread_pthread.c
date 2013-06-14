@@ -33,6 +33,9 @@
 #if defined(HAVE_SYS_TIME_H)
 #include <sys/time.h>
 #endif
+#if defined(HAVE_X86INTRIN_H)
+# include <x86intrin.h>
+#endif
 
 static void native_mutex_lock(pthread_mutex_t *lock);
 static void native_mutex_unlock(pthread_mutex_t *lock);
@@ -94,9 +97,25 @@ gvl_acquire_common(rb_vm_t *vm)
     vm->gvl.acquired = 1;
 }
 
+
+#define RUBY_XABORT_GVL 1
 static void
 gvl_acquire(rb_vm_t *vm, rb_thread_t *th)
 {
+#ifdef __RTM__
+    unsigned int status;
+try:
+    if ((status = _xbegin()) == _XBEGIN_STARTED) {
+	if (vm->gvl.acquired) {
+	    _xabort(RUBY_XABORT_GVL);
+	}
+	return;
+    }
+    if ((status & _XABORT_RETRY) || _XABORT_CODE(status) == RUBY_XABORT_GVL) {
+	sched_yield();
+	goto try;
+    }
+#endif
     native_mutex_lock(&vm->gvl.lock);
     gvl_acquire_common(vm);
     native_mutex_unlock(&vm->gvl.lock);
@@ -113,6 +132,12 @@ gvl_release_common(rb_vm_t *vm)
 static void
 gvl_release(rb_vm_t *vm)
 {
+#ifdef __RTM__
+    if (_xtest()) {
+	_xend();
+	return;
+    }
+#endif
     native_mutex_lock(&vm->gvl.lock);
     gvl_release_common(vm);
     native_mutex_unlock(&vm->gvl.lock);
@@ -121,10 +146,35 @@ gvl_release(rb_vm_t *vm)
 static void
 gvl_yield(rb_vm_t *vm, rb_thread_t *th)
 {
+#ifdef __RTM__
+    unsigned int status;
+
+    if (_xtest()) {
+	_xend();
+    }
+    else {
+	native_mutex_lock(&vm->gvl.lock);
+	gvl_release_common(vm);
+	native_mutex_unlock(&vm->gvl.lock);
+    }
+
+try:
+    if ((status = _xbegin()) == _XBEGIN_STARTED) {
+	if (vm->gvl.acquired) {
+	    _xabort(RUBY_XABORT_GVL);
+	}
+	return;
+    }
+    if (status & _XABORT_RETRY) {
+	sched_yield();
+	goto try;
+    }
+    native_mutex_lock(&vm->gvl.lock);
+#else
     native_mutex_lock(&vm->gvl.lock);
 
     gvl_release_common(vm);
-
+#endif
     /* An another thread is processing GVL yield. */
     if (UNLIKELY(vm->gvl.wait_yield)) {
 	while (vm->gvl.wait_yield)

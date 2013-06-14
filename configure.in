@@ -1030,6 +1030,7 @@ AC_CHECK_HEADERS( \
   ieeefp.h \
   ucontext.h \
   intrinsics.h \
+  x86intrin.h \
   langinfo.h \
   locale.h \
   sys/sendfile.h \
