@@ -782,6 +782,15 @@ stat_ctime(struct stat *st)
     return rb_time_nano_new(ts.tv_sec, ts.tv_nsec);
 }
 
+#if defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC)
+static VALUE
+stat_birthtime(struct stat *st)
+{
+    struct timespec *ts = &st->st_birthtimespec;
+    return rb_time_nano_new(ts->tv_sec, ts->tv_nsec);
+#endif
+}
+
 /*
  *  call-seq:
  *     stat.atime   -> time
@@ -836,6 +845,37 @@ rb_stat_ctime(VALUE self)
 }
 
 /*
+ *  call-seq:
+ *     stat.birthtime  ->  aTime
+ *
+ *  Returns the birth time for <i>stat</i>.
+ *  If the platform doesn't have birthtime, returns <i>ctime</i>.
+ *
+ *     File.write("testfile", "foo")
+ *     sleep 10
+ *     File.write("testfile", "bar")
+ *     sleep 10
+ *     File.chmod(0644, "testfile")
+ *     sleep 10
+ *     File.read("testfile")
+ *     File.stat("testfile").birthtime   #=> 2014-02-24 11:19:17 +0900
+ *     File.stat("testfile").mtime       #=> 2014-02-24 11:19:27 +0900
+ *     File.stat("testfile").ctime       #=> 2014-02-24 11:19:37 +0900
+ *     File.stat("testfile").atime       #=> 2014-02-24 11:19:47 +0900
+ *
+ */
+
+static VALUE
+rb_stat_birthtime(VALUE self)
+{
+#if defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC)
+    return stat_birthtime(get_stat(self));
+#else
+    return stat_ctime(get_stat(self));
+#endif
+}
+
+/*
  * call-seq:
  *   stat.inspect  ->  string
  *
@@ -846,7 +886,8 @@ rb_stat_ctime(VALUE self)
  *      #    nlink=1, uid=0, gid=0, rdev=0x0, size=1374, blksize=4096,
  *      #    blocks=8, atime=Wed Dec 10 10:16:12 CST 2003,
  *      #    mtime=Fri Sep 12 15:41:41 CDT 2003,
- *      #    ctime=Mon Oct 27 11:20:27 CST 2003>"
+ *      #    ctime=Mon Oct 27 11:20:27 CST 2003,
+ *      #    birthtime=Mon Aug 04 08:13:49 CDT 2003>"
  */
 
 static VALUE
@@ -871,6 +912,9 @@ rb_stat_inspect(VALUE self)
 	{"atime",   rb_stat_atime},
 	{"mtime",   rb_stat_mtime},
 	{"ctime",   rb_stat_ctime},
+#if defined(HAVE_STRUCT_STAT_ST_BIRTHTIMESPEC)
+	{"birthtime",   rb_stat_birthtime},
+#endif
     };
 
     struct stat* st;
@@ -5815,6 +5859,7 @@ Init_File(void)
     rb_define_method(rb_cStat, "atime", rb_stat_atime, 0);
     rb_define_method(rb_cStat, "mtime", rb_stat_mtime, 0);
     rb_define_method(rb_cStat, "ctime", rb_stat_ctime, 0);
+    rb_define_method(rb_cStat, "birthtime", rb_stat_birthtime, 0);
 
     rb_define_method(rb_cStat, "inspect", rb_stat_inspect, 0);
 
