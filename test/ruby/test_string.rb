@@ -2114,6 +2114,41 @@ class TestString < Test::Unit::TestCase
     assert_equal(1, "\u3042B".casecmp("\u3042a"))
   end
 
+  def test_versioncmp
+    require "rubygems"
+    ary = %w[
+      1
+      2
+      10
+      1.a
+      1.a-a
+      1.a--
+      1.a--.-
+      1.a-1
+      1.a.q
+      1.a--a
+      1.a--1
+      1.a.pre.a
+      1.a-pre.a
+      1.a.pre-a
+      1.a1
+      1.a2
+      1.aa
+      1.b
+      1.01
+      1.1
+      1.1a
+      1.1-a
+      1.1-b
+      1.1q
+      1.2
+      1.10
+    ]
+    ary.product(ary) do |a, b|
+      assert_equal(Gem::Version.new(a)<=>Gem::Version.new(b), a.versioncmp(b), "#{a.dump}, #{b.dump}")
+    end
+  end
+
   def test_upcase2
     assert_equal("\u3042AB", "\u3042aB".upcase)
   end
