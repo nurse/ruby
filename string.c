@@ -2605,6 +2605,232 @@ rb_str_casecmp(VALUE str1, VALUE str2)
     return INT2FIX(-1);
 }
 
+static int
+version_string_p(VALUE str)
+{
+    const char *p = RSTRING_PTR(str);
+    const char *e = RSTRING_END(str);
+
+    if (!rb_enc_asciicompat(STR_ENC_GET(str))) return FALSE;
+
+    if (!ISDIGIT(*p)) return FALSE;
+    do { if (++p >= e) return TRUE; } while (ISDIGIT(*p));
+
+    while (*p == '.') {
+	if (++p >= e) return FALSE;
+	if (!ISALNUM(*p)) return FALSE;
+	do { if (++p >= e) return TRUE; } while (ISALNUM(*p));
+    }
+
+    if (*p != '-') return FALSE;
+     do {
+	if (++p >= e) return FALSE;
+	if (!ISALNUM(*p) && *p != '-') return FALSE;
+	do { if (++p >= e) return TRUE; } while (ISALNUM(*p) || *p == '-');
+    } while (*p == '.');
+
+    return FALSE;
+}
+
+/* return value: whether end of nueric part is EOS
+ * sp: first nonzero digit
+ * ep: end of digits
+ */
+static void
+search_numerical_str(const char **sp, const char **ep)
+{
+    const char *p = *sp;
+    const char *e = *ep;
+    assert(p < e);
+    for (;;) {
+	if (*p != '0') break;
+	p++;
+	if (p == e) {
+	    *sp = p;
+	    goto finish;
+	}
+    }
+    *sp = p;
+    assert(p < e);
+    for (;;) {
+	if (!ISDIGIT(*p)) break;
+	p++;
+	if (p == e) {
+	    goto finish;
+	}
+    }
+finish:
+    *ep = p;
+    return;
+}
+
+static VALUE
+numerical_compare(const char **pp1, const char *p1end, const char **pp2, const char *p2end)
+{
+    const char *s1 = *pp1, *p1=p1end, *s2 = *pp2, *p2=p2end;
+    ptrdiff_t len1, len2;
+    int r;
+
+    search_numerical_str(&s1, &p1);
+    search_numerical_str(&s2, &p2);
+
+    /* compre digits length */
+    len1 = p1 - s1;
+    len2 = p2 - s2;
+    if (len1 != len2) return INT2FIX(len1 < len2 ? -1 : 1);
+
+    /* compre numeric value */
+    r = memcmp(s1, s2, len1);
+    if (r) return r < 0 ? INT2FIX(-1) : INT2FIX(1);
+
+    *pp1 = p1;
+    *pp2 = p2;
+    return Qnil;
+}
+
+/*
+ *  call-seq:
+ *     str.versioncmp(other_str)   -> -1, 0, +1 or nil
+ *
+ *  Compare strings as version strings.
+ *
+ *     "a1".versioncmp("a1")            #=> 0
+ *     "aa".versioncmp("a1")            #=> 1
+ *     "a1".versioncmp("aa")            #=> -1
+ *     "a1".versioncmp("a01")           #=> -1
+ *     "2.1.2".numericcmp("2.1.10")     #=> 1
+ */
+
+static VALUE
+rb_str_versioncmp(VALUE str1, VALUE str2)
+{
+    const char *p, *pe, *q, *qe;
+
+    StringValue(str2);
+    if (!version_string_p(str1)) {
+	rb_raise(rb_eArgError, "receiver is not version string '%+"PRIsVALUE"'", str1);
+    }
+    if (!version_string_p(str2)) {
+	rb_raise(rb_eArgError, "argument is not version string '%+"PRIsVALUE"'", str2);
+    }
+
+    p = RSTRING_PTR(str1); pe = RSTRING_END(str1);
+    q = RSTRING_PTR(str2); qe = RSTRING_END(str2);
+
+    for (;;) {
+	if (*p == '-') {
+hyphen_left:
+	    if (*q == '-') goto next_char;
+	    while (*q == '.') {
+		if (++q == qe) return INT2FIX(1);
+	    }
+	    if (*q != 'p') return INT2FIX(ISDIGIT(*q) || 'p' < *q ? -1 : 1);
+	    if (++q == qe) return INT2FIX(1);
+	    if (*q != 'r') return INT2FIX(ISDIGIT(*q) || 'r' < *q ? -1 : 1);
+	    if (++q == qe) return INT2FIX(1);
+	    if (*q != 'e') return INT2FIX(ISDIGIT(*q) || 'e' < *q ? -1 : 1);
+	    if (++q == qe) return INT2FIX(1);
+	    if (*q != '.') {
+		if (*q == '-') {
+		    p++;
+		    goto hyphen_right;
+		}
+		else if (ISALPHA(*q)) return INT2FIX(-1);
+		q--; /* DIGIT */
+	    }
+	}
+	else if (*q == '-') {
+hyphen_right:
+	    if (*p == '-') goto next_char;
+	    while (*p == '.') {
+		if (++p == pe) return INT2FIX(-1);
+	    }
+	    if (*p != 'p') return INT2FIX(ISDIGIT(*p) || 'p' < *p ? 1 : -1);
+	    if (++p == pe) return INT2FIX(-1);
+	    if (*p != 'r') return INT2FIX(ISDIGIT(*p) || 'r' < *p ? 1 : -1);
+	    if (++p == pe) return INT2FIX(-1);
+	    if (*p != 'e') return INT2FIX(ISDIGIT(*p) || 'e' < *p ? 1 : -1);
+	    if (++p == pe) return INT2FIX(-1);
+	    if (*p == '-') {
+		q++;
+		goto hyphen_left;
+	    }
+	    else if (ISALPHA(*p)) return INT2FIX(1);
+	    else if (ISDIGIT(*p)) {
+		p--; /* DIGIT */
+	    }
+	}
+	else if (ISDIGIT(*p)) {
+	    if (ISDIGIT(*q)) {
+		VALUE r = numerical_compare(&p, pe, &q, qe);
+		if(!NIL_P(r)) return r;
+		goto incremented;
+	    }
+	    else {
+		return INT2FIX(1);
+	    }
+	}
+	else if (ISDIGIT(*q)) {
+	    return INT2FIX(-1);
+	}
+	else if (ISALPHA(*p)) {
+	    if (ISALPHA(*q)) {
+		for (;;) {
+		    if (*p != *q) return INT2FIX(*p < *q ? -1 : 1);
+		    p++;
+		    q++;
+		    if (p == pe) {
+			if (q == qe) return INT2FIX(0);
+			if (ISALPHA(*q)) return INT2FIX(-1);
+			goto incremented;
+		    }
+		    else if (q == qe) {
+			if (ISALPHA(*p)) return INT2FIX(1);
+			goto incremented;
+		    }
+		    else if (ISALPHA(*p)) {
+			if (!ISALPHA(*q)) return INT2FIX(1);
+		    }
+		    else if (ISALPHA(*q)) return INT2FIX(-1);
+		    else goto incremented;
+		}
+		continue;
+	    }
+	    else return INT2FIX(1);
+	}
+	else if (ISALPHA(*q)) {
+	    return INT2FIX(-1);
+	}
+	else rb_bug("%s %s",p,q);
+
+next_char:
+	p++;
+	q++;
+
+incremented:
+	while (*p == '.' && ++p != pe);
+	while (*q == '.' && ++q != qe);
+	if (p == pe) {
+	    if (q == qe) return INT2FIX(0);
+	    if (ISDIGIT(*q)) {
+		return INT2FIX(-1);
+	    }
+	    else /*if (ISALPHA(*q) || *q == '-')*/ {
+		return INT2FIX(1);
+	    }
+	}
+	else if (q == qe) {
+	    if (ISDIGIT(*p)) {
+		return INT2FIX(1);
+	    }
+	    else /*if (ISALPHA(*p) || *p == '-')*/ {
+		return INT2FIX(-1);
+	    }
+	}
+    }
+    UNREACHABLE;
+}
+
 #define rb_str_index(str, sub, offset) rb_strseq_index(str, sub, offset, 0)
 
 static long
@@ -8778,6 +9004,7 @@ Init_String(void)
     rb_define_method(rb_cString, "eql?", rb_str_eql, 1);
     rb_define_method(rb_cString, "hash", rb_str_hash_m, 0);
     rb_define_method(rb_cString, "casecmp", rb_str_casecmp, 1);
+    rb_define_method(rb_cString, "versioncmp", rb_str_versioncmp, 1);
     rb_define_method(rb_cString, "+", rb_str_plus, 1);
     rb_define_method(rb_cString, "*", rb_str_times, 1);
     rb_define_method(rb_cString, "%", rb_str_format_m, 1);
