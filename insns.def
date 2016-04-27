@@ -749,26 +749,29 @@ DEFINE_INSN
 checkmatch
 (rb_num_t flag)
 (VALUE target, VALUE pattern)
-(VALUE result)
+(VALUE val)
 {
     enum vm_check_match_type checkmatch_type =
       (enum vm_check_match_type)(flag & VM_CHECKMATCH_TYPE_MASK);
-    result = Qfalse;
+    val = Qfalse;
 
     if (flag & VM_CHECKMATCH_ARRAY) {
 	int i;
 	for (i = 0; i < RARRAY_LEN(pattern); i++) {
 	    if (RTEST(check_match(RARRAY_AREF(pattern, i), target, checkmatch_type))) {
-		result = Qtrue;
+		val = Qtrue;
 		break;
 	    }
 	}
     }
     else {
 	if (RTEST(check_match(pattern, target, checkmatch_type))) {
-	    result = Qtrue;
+	    val = Qtrue;
 	}
     }
+#ifdef CURRENT_INSN_UNIF_1
+    NEXT_INSN_IN_UNIF();
+#endif
 }
 
 /**
@@ -1589,14 +1592,31 @@ opt_eq
 (VALUE recv, VALUE obj)
 (VALUE val)
 {
+#ifdef CURRENT_INSN_UNIF_1
+    if (recv == Qundef) {
+	val = obj;
+	NEXT_INSN_IN_UNIF();
+    }
+#endif
     val = opt_eq_func(recv, obj, ci, cc);
 
     if (val == Qundef) {
 	/* other */
+#ifdef CURRENT_INSN_UNIF_1
+	PUSH(Qundef);
+        ADD_PC(-4);
+#endif
 	PUSH(recv);
 	PUSH(obj);
 	CALL_SIMPLE_METHOD(recv);
+#ifdef CURRENT_INSN_UNIF_1
+	ADD_PC(4);
+	POP();
+#endif
     }
+#ifdef CURRENT_INSN_UNIF_1
+    NEXT_INSN_IN_UNIF();
+#endif
 }
 
 /**
@@ -1611,6 +1631,12 @@ opt_neq
 (VALUE val)
 {
     extern VALUE rb_obj_not_equal(VALUE obj1, VALUE obj2);
+#ifdef CURRENT_INSN_UNIF_1
+    if (recv == Qundef) {
+	val = obj;
+	NEXT_INSN_IN_UNIF();
+    }
+#endif
     vm_search_method(ci, cc, recv);
 
     val = Qundef;
@@ -1620,14 +1646,25 @@ opt_neq
 
 	if (val != Qundef) {
 	    val = RTEST(val) ? Qfalse : Qtrue;
+#ifdef CURRENT_INSN_UNIF_1
+	    NEXT_INSN_IN_UNIF();
+#endif
 	}
     }
 
     if (val == Qundef) {
 	/* other */
+#ifdef CURRENT_INSN_UNIF_1
+	PUSH(Qundef);
+        ADD_PC(-6);
+#endif
 	PUSH(recv);
 	PUSH(obj);
 	CALL_SIMPLE_METHOD(recv);
+#ifdef CURRENT_INSN_UNIF_1
+	ADD_PC(6);
+	POP();
+#endif
     }
 }
 
@@ -1642,6 +1679,11 @@ opt_lt
 (VALUE recv, VALUE obj)
 (VALUE val)
 {
+#ifdef CURRENT_INSN_UNIF_1
+    if (recv == Qundef) {
+	val = obj;
+    } else
+#endif
     if (FIXNUM_2_P(recv, obj) &&
 	BASIC_OP_UNREDEFINED_P(BOP_LT, FIXNUM_REDEFINED_OP_FLAG)) {
 	SIGNED_VALUE a = recv, b = obj;
@@ -1669,10 +1711,21 @@ opt_lt
     }
     else {
       INSN_LABEL(normal_dispatch):
+#ifdef CURRENT_INSN_UNIF_1
+	PUSH(Qundef);
+        ADD_PC(-4);
+#endif
 	PUSH(recv);
 	PUSH(obj);
 	CALL_SIMPLE_METHOD(recv);
+#ifdef CURRENT_INSN_UNIF_1
+	ADD_PC(4);
+	POP();
+#endif
     }
+#ifdef CURRENT_INSN_UNIF_1
+    NEXT_INSN_IN_UNIF();
+#endif
 }
 
 /**
@@ -1686,6 +1739,11 @@ opt_le
 (VALUE recv, VALUE obj)
 (VALUE val)
 {
+#ifdef CURRENT_INSN_UNIF_1
+    if (recv == Qundef) {
+	val = obj;
+    } else
+#endif
     if (FIXNUM_2_P(recv, obj) &&
 	BASIC_OP_UNREDEFINED_P(BOP_LE, FIXNUM_REDEFINED_OP_FLAG)) {
 	SIGNED_VALUE a = recv, b = obj;
@@ -1704,10 +1762,21 @@ opt_le
     }
     else {
 	/* other */
+#ifdef CURRENT_INSN_UNIF_1
+	PUSH(Qundef);
+        ADD_PC(-4);
+#endif
 	PUSH(recv);
 	PUSH(obj);
 	CALL_SIMPLE_METHOD(recv);
+#ifdef CURRENT_INSN_UNIF_1
+	ADD_PC(4);
+	POP();
+#endif
     }
+#ifdef CURRENT_INSN_UNIF_1
+    NEXT_INSN_IN_UNIF();
+#endif
 }
 
 /**
@@ -1721,6 +1790,12 @@ opt_gt
 (VALUE recv, VALUE obj)
 (VALUE val)
 {
+#ifdef CURRENT_INSN_UNIF_1
+    if (recv == Qundef) {
+	val = obj;
+	NEXT_INSN();
+    }
+#endif
     if (FIXNUM_2_P(recv, obj) &&
 	BASIC_OP_UNREDEFINED_P(BOP_GT, FIXNUM_REDEFINED_OP_FLAG)) {
 	SIGNED_VALUE a = recv, b = obj;
@@ -1748,10 +1823,21 @@ opt_gt
     }
     else {
       INSN_LABEL(normal_dispatch):
+#ifdef CURRENT_INSN_UNIF_1
+	PUSH(Qundef);
+        ADD_PC(-4);
+#endif
 	PUSH(recv);
 	PUSH(obj);
 	CALL_SIMPLE_METHOD(recv);
+#ifdef CURRENT_INSN_UNIF_1
+	ADD_PC(4);
+	POP();
+#endif
     }
+#ifdef CURRENT_INSN_UNIF_1
+    NEXT_INSN_IN_UNIF();
+#endif
 }
 
 /**
@@ -1765,6 +1851,12 @@ opt_ge
 (VALUE recv, VALUE obj)
 (VALUE val)
 {
+#ifdef CURRENT_INSN_UNIF_1
+    if (recv == Qundef) {
+	val = obj;
+	NEXT_INSN();
+    }
+#endif
     if (FIXNUM_2_P(recv, obj) &&
 	BASIC_OP_UNREDEFINED_P(BOP_GE, FIXNUM_REDEFINED_OP_FLAG)) {
 	SIGNED_VALUE a = recv, b = obj;
@@ -1782,10 +1874,21 @@ opt_ge
 	val = RFLOAT_VALUE(recv) >= RFLOAT_VALUE(obj) ? Qtrue : Qfalse;
     }
     else {
+#ifdef CURRENT_INSN_UNIF_1
+	PUSH(Qundef);
+        ADD_PC(-4);
+#endif
 	PUSH(recv);
 	PUSH(obj);
 	CALL_SIMPLE_METHOD(recv);
+#ifdef CURRENT_INSN_UNIF_1
+	ADD_PC(4);
+	POP();
+#endif
     }
+#ifdef CURRENT_INSN_UNIF_1
+    NEXT_INSN_IN_UNIF();
+#endif
 }
 
 /**

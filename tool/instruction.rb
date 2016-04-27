@@ -420,13 +420,17 @@ class RubyVM
         :e => 'unified insn',
         :j => 'unified insn',
       }
+      head = ''
       body = ''
+      foot = ''
       passed = []
       tvars = []
       defopes = []
       sp_inc = ''
 
       insns.each_with_index{|insn, i|
+        head << "#define CURRENT_INSN_UNIF_#{i} BIN(#{insn.name})\n"
+        foot << "#undef  CURRENT_INSN_UNIF_#{i}\n"
         names << insn.name
         redef_vars = {}
 
@@ -494,7 +498,8 @@ class RubyVM
         end
       }
       add_insn insn = Instruction.new("UNIFIED_" + names.join('_'),
-                                   opes, pops, rets.reverse, comm, body,
+                                   opes, pops, rets.reverse, comm,
+                                   head+body+foot,
                                    tvars_ary, sp_inc)
       insn.defopes.replace defopes
       insns[0].add_unif [insn, insns]
@@ -860,7 +865,6 @@ class RubyVM
     end
 
     def make_footer_undefs insn
-      commit "#undef CURRENT_INSN_#{insn.name}"
       commit "#undef INSN_IS_SC"
       commit "#undef INSN_LABEL"
       commit "#undef LABEL_IS_SC"

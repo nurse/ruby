@@ -3,8 +3,6 @@
 #
 #
 
-__END__
-
 putobject putobject
 putobject putstring
 putobject setlocal
@@ -24,4 +22,27 @@ getlocal getlocal
 # from tak, ackermann
 getlocal putobject
 
-
+defined branchif
+defined branchunless
+defined branchnil
+checkmatch branchif
+checkmatch branchunless
+checkmatch branchnil
+opt_eq branchif
+opt_eq branchunless
+opt_eq branchnil
+opt_neq branchif
+opt_neq branchunless
+opt_neq branchnil
+opt_lt branchif
+opt_lt branchunless
+opt_lt branchnil
+opt_le branchif
+opt_le branchunless
+opt_le branchnil
+opt_gt branchif
+opt_gt branchunless
+opt_gt branchnil
+opt_ge branchif
+opt_ge branchunless
+opt_ge branchnil

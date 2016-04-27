@@ -13,13 +13,13 @@
  */
 
 /*
+  static const int UNIFIED_insn_name_0[] = {id, size, ...};
   static const int UNIFIED_insn_name_1[] = {id, size, ...};
-  static const int UNIFIED_insn_name_2[] = {id, size, ...};
   ...
 
-  static const int *const UNIFIED_insn_name[] = {size,
-    UNIFIED_insn_name_1,
-    UNIFIED_insn_name_2, ...};
+  static const int *const UNIFIED_insn_nameA[] = {size,
+    UNIFIED_insn_name_0,
+    UNIFIED_insn_name_1, ...};
   ...
 
   static const int *const *const unified_insns_data[] = {

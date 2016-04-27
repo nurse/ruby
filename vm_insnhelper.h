@@ -224,4 +224,18 @@ THROW_DATA_STATE(const struct vm_throw_data *obj)
     return (int)obj->throw_state;
 }
 
+#if OPT_INSTRUCTIONS_UNIFICATION
+#define NEXT_INSN_IN_UNIF() do { \
+	switch (CURRENT_INSN_UNIF_1) { \
+	  case BIN(branchif):     if ( RTEST(val)) JUMP(dst_1); break; \
+	  case BIN(branchunless): if (!RTEST(val)) JUMP(dst_1); break; \
+	  case BIN(branchnil):    if ( NIL_P(val)) JUMP(dst_1); break; \
+	} \
+	NEXT_INSN(); \
+        UNREACHABLE; \
+    } while(0)
+#define CALL_SIMPLE_METHOD_IN_UNIF(recv_) CALL_SIMPLE_METHOD(recv_)
+
+#endif
+
 #endif /* RUBY_INSNHELPER_H */

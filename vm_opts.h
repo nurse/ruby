@@ -43,7 +43,7 @@
 
 /* architecture independent, affects generated code */
 #define OPT_OPERANDS_UNIFICATION     1
-#define OPT_INSTRUCTIONS_UNIFICATION 0
+#define OPT_INSTRUCTIONS_UNIFICATION 1
 #define OPT_UNIFY_ALL_COMBINATION    0
 #define OPT_STACK_CACHING            0
 

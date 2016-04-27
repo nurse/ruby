@@ -2506,7 +2506,7 @@ iseq_insns_unification(rb_iseq_t *iseq, LINK_ANCHOR *anchor)
 		    LINK_ELEMENT *li = list->next;
 		    for (k = 2; k < unified[1]; k++) {
 			if (!IS_INSN(li) ||
-			    ((INSN *)li)->insn_id != unified[k]) {
+			    (int)((INSN *)li)->insn_id != unified[k]) {
 			    goto miss;
 			}
 			li = li->next;

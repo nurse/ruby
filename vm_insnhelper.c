@@ -1153,6 +1153,7 @@ static
 #ifndef NO_BIG_INLINE
 inline
 #endif
+__attribute__((always_inline))
 VALUE
 opt_eq_func(VALUE recv, VALUE obj, CALL_INFO ci, CALL_CACHE cc)
 {
