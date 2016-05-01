@@ -3419,9 +3419,10 @@ gc_page_sweep(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *sweep_
     for (i=0; i < HEAP_PAGE_BITMAP_LIMIT; i++) {
 	bitset = ~bits[i];
 	if (bitset) {
-	    p = offset  + i * BITS_BITLENGTH;
 	    do {
-		if (bitset & 1) {
+		p = offset + i * BITS_BITLENGTH + ntz_intptr(bitset);
+		bitset &= (bitset - 1);
+		{
 		    switch (BUILTIN_TYPE(p)) {
 		      default: { /* majority case */
 			  gc_report(2, objspace, "page_sweep: free %s\n", obj_info((VALUE)p));
@@ -3452,8 +3453,6 @@ gc_page_sweep(rb_objspace_t *objspace, rb_heap_t *heap, struct heap_page *sweep_
 			break;
 		    }
 		}
-		p++;
-		bitset >>= 1;
 	    } while (bitset);
 	}
     }
