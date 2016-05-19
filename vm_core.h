@@ -445,6 +445,7 @@ enum ruby_basic_operators {
     BOP_ASET,
     BOP_LENGTH,
     BOP_SIZE,
+    BOP_OPT_STTNI_BLANK_P,
     BOP_EMPTY_P,
     BOP_SUCC,
     BOP_GT,

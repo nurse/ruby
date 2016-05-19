@@ -2034,6 +2034,34 @@ opt_empty_p
 
 /**
   @c optimize
+  @e optimized sttni_blank?
+  @j 最適化された recv.empty?()。
+ */
+DEFINE_INSN
+opt_opt_sttni_blank_p
+(CALL_INFO ci, CALL_CACHE cc)
+(VALUE recv)
+(VALUE val)
+{
+    if (!SPECIAL_CONST_P(recv)) {
+	if (RBASIC_CLASS(recv) == rb_cString &&
+	    BASIC_OP_UNREDEFINED_P(BOP_OPT_STTNI_BLANK_P, STRING_REDEFINED_OP_FLAG)) {
+	    VALUE rb_str_blank(VALUE);
+	    val = rb_str_blank(recv);
+	}
+	else {
+	    goto INSN_LABEL(normal_dispatch);
+	}
+    }
+    else {
+      INSN_LABEL(normal_dispatch):
+	PUSH(recv);
+	CALL_SIMPLE_METHOD(recv);
+    }
+}
+
+/**
+  @c optimize
   @e optimized succ
   @j 最適化された recv.succ()。
  */

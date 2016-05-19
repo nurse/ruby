@@ -1706,6 +1706,123 @@ rb_str_empty(VALUE str)
     return Qfalse;
 }
 
+#include <x86intrin.h>
+static int
+str_blank0(const unsigned char **pp, const unsigned char *e, int epilogue)
+{
+    const unsigned char *p = *pp;
+    while (p < e) {
+	switch (*p++) {
+	  case 9: case 10: case 11: case 12: case 13: case 32:
+	    if (!epilogue) {
+		*pp = p;
+		return TRUE;
+	    }
+	    break;
+	  case 0xC2:
+	    if (++p >= e || p[-2] != 0x85 || p[-1] != 0xA0) return FALSE;
+	    break;
+	  case 0xE1:
+	    if (++p >= e || p[-2] != 0x9A || p[-1] != 0x80) return FALSE;
+	    break;
+	  case 0xE2:
+	    if (p+1 >= e) return FALSE;
+	    switch (*p++) {
+	      case 0x80:
+		switch (*p++) {
+		  default:
+		    return FALSE;
+		  case 0x80: case 0x81: case 0x82: case 0x83: case 0x84:
+		  case 0x85: case 0x86: case 0x87: case 0x88: case 0x89:
+		  case 0x8A: case 0xA8: case 0xA9: case 0xAF:
+		    break;
+		}
+		break;
+	      case 0x81:
+		if (*p++ != 0x9F) return FALSE;
+		break;
+	      default:
+		return FALSE;
+	    }
+	    break;
+	  case 0xE3:
+	    if (++p >= e || p[-2] != 0x80 || p[-1] != 0x80) return FALSE;
+	    break;
+	  default:
+	    return FALSE;
+	}
+    }
+    *pp = p;
+    return TRUE;
+}
+
+/*
+ *  call-seq:
+ *     str.blank?   -> true or false
+ *
+ *  Returns <code>true</code> if <i>str</i> is empty or has only (Unicode)
+ *  whitespace characters.
+ *
+ *     "hello".blank?   #=> false
+ *     " ".blank?       #=> false
+ *     "\u{0009 000a 000b 000c 000d 0020 0085 00a0 1680}".blank? #=> true
+ *     "\u{2000 2001 2002 2003 2004 2005 2006 2007}".blank? #=> true
+ *     "\u{2008 2009 200a 2028 2029 202f 205f 3000}".blank? #=> true
+ *
+ *  See also http://api.rubyonrails.org/v4.2/classes/String.html#method-i-blank-3F
+ */
+
+VALUE
+rb_str_blank(VALUE str)
+{
+    const unsigned char *p = (const unsigned char *)RSTRING_PTR(str);
+    const unsigned char *e = (const unsigned char *)RSTRING_END(str);
+    intptr_t pe = (intptr_t)e;
+    const __m128i mask = _mm_set_epi8(0,0,0,0,0,0,0,0,0,0,9,10,11,12,13,32);
+    const int masksize = 6;
+    const int mode = _SIDD_CMP_EQUAL_ANY|_SIDD_UBYTE_OPS|_SIDD_MASKED_NEGATIVE_POLARITY;
+
+    if (RSTRING_LEN(str) == 0) return Qtrue;
+
+    /* set the edge of a page before the end of string */
+    if (pe & 0xfff > 0xff1) {
+	pe &= ~0xfff;
+	pe |= 0xff1;
+    }
+
+    for (; (intptr_t)p < pe; p += sizeof(__m128i)) {
+	int idx, len;
+	ptrdiff_t sz;
+	__m128i m;
+
+retry:
+	sz = e - p;
+	len = (int)((sz&INT_MAX) | (sz >> 27));
+	m = _mm_loadu_si128((__m128i const *)p);
+
+	/* CF: 1 if there's non spaces
+	 * ZF: 1 if reached the end
+	 */
+	if (_mm_cmpestra(mask, masksize, m, len, mode)) { /* CF=0 ZF=0 */
+	    continue;
+	}
+#if 0 /* GCC 6 wrongly generates cmpestri and cmpestri... */
+	if (_mm_cmpestrc(mask, masksize, m, len, mode)) { /* CF=0 ZF=1 */
+	    return Qtrue;
+	}
+	idx = _mm_cmpestri(mask, masksize, m, len, mode);
+#else
+	idx = _mm_cmpestri(mask, masksize, m, len, mode);
+	if (sz < idx) return Qtrue;
+#endif
+	p += idx;
+	if (!str_blank0(&p, e, FALSE)) return Qfalse;
+	goto retry;
+    }
+    if (!str_blank0(&p, e, TRUE)) return Qfalse;
+    return Qtrue;
+}
+
 /*
  *  call-seq:
  *     str + other_str   -> new_str
@@ -9675,6 +9792,8 @@ Init_String(void)
     rb_define_method(rb_cString, "size", rb_str_length, 0);
     rb_define_method(rb_cString, "bytesize", rb_str_bytesize, 0);
     rb_define_method(rb_cString, "empty?", rb_str_empty, 0);
+    rb_define_method(rb_cString, "sttni_blank?", rb_str_blank, 0);
+    rb_define_method(rb_cString, "opt_sttni_blank?", rb_str_blank, 0);
     rb_define_method(rb_cString, "=~", rb_str_match, 1);
     rb_define_method(rb_cString, "match", rb_str_match_m, -1);
     rb_define_method(rb_cString, "succ", rb_str_succ, 0);

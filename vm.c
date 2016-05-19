@@ -1477,6 +1477,7 @@ vm_init_redefined_flag(void)
     OP(ASET, ASET), (C(Array), C(Hash));
     OP(Length, LENGTH), (C(Array), C(String), C(Hash));
     OP(Size, SIZE), (C(Array), C(String), C(Hash));
+    OP(Opt_sttni_blankP, OPT_STTNI_BLANK_P), (C(String));
     OP(EmptyP, EMPTY_P), (C(Array), C(String), C(Hash));
     OP(Succ, SUCC), (C(Integer), C(String), C(Time));
     OP(EqTilde, MATCH), (C(Regexp), C(String));
