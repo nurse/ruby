@@ -112,7 +112,6 @@ class RDoc::RubyLex
     @readed_auto_clean_up = false
     @exception_on_syntax_error = true
 
-    @prompt = nil
     @prev_seek = nil
     @ltype = nil
   end
@@ -247,28 +246,12 @@ class RDoc::RubyLex
   end
 
   def buf_input
-    prompt
     line = @input.call
     return nil unless line
     @rests.concat line.split(//)
     true
   end
   private :buf_input
-
-  def set_prompt(p = nil, &block)
-    p = block if block_given?
-    if p.respond_to?(:call)
-      @prompt = p
-    else
-      @prompt = Proc.new{print p}
-    end
-  end
-
-  def prompt
-    if @prompt
-      @prompt.call(@ltype, @indent, @continue, @line_no)
-    end
-  end
 
   def initialize_input
     @ltype = nil
@@ -280,7 +263,6 @@ class RDoc::RubyLex
     @here_header = false
 
     @continue = false
-    prompt
 
     @line = ""
     @exp_line_no = @line_no
@@ -292,7 +274,6 @@ class RDoc::RubyLex
       loop do
         begin
           @continue = false
-          prompt
           unless l = lex
             throw :TERM_INPUT if @line == ''
           else
@@ -311,10 +292,8 @@ class RDoc::RubyLex
 
           @indent = 0
           @indent_stack = []
-          prompt
         rescue TerminateLineInput
           initialize_input
-          prompt
           get_readed
         end
       end
