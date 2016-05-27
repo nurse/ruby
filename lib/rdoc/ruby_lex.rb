@@ -41,7 +41,6 @@ class RDoc::RubyLex
   def_exception(:TerminateLineInput, "Terminate Line Input")
 
   include RDoc::RubyToken
-  include IRB
 
   attr_accessor :continue
   attr_accessor :lex_state
