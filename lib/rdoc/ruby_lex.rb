@@ -779,7 +779,7 @@ class RDoc::RubyLex
     #       end
 
     @OP.def_rule("_") do
-      if peek_match?(/_END__/) and @lex_state == :EXPR_BEG then
+      if peek_equal?('_END__') and @lex_state == :EXPR_BEG then
         6.times { getc }
         Token(TkEND_OF_SCRIPT, '__END__')
       else
