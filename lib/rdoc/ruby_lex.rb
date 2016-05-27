@@ -83,17 +83,11 @@ class RDoc::RubyLex
   def initialize(content, options)
     lex_init
 
-    if /\t/ =~ content then
+    if options
       tab_width = options.tab_width
-      content = content.split(/\n/).map do |line|
-        1 while line.gsub!(/\t+/) {
-          ' ' * (tab_width*$&.length - $`.length % tab_width)
-        }  && $~
-        line
-      end.join("\n")
+      content.gsub!(/(?<=^|\G)([^\n\t]*)(\t+)/){$1+" "*(tab_width*$2.bytesize-$1.size%tab_width)}
     end
-
-    content << "\n" unless content[-1, 1] == "\n"
+    content << "\n" unless content.end_with?("\n")
 
     set_input StringIO.new content
 
