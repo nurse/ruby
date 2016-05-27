@@ -44,7 +44,6 @@ class RDoc::RubyLex
 
   attr_accessor :continue
   attr_accessor :lex_state
-  attr_reader :reader
 
   class << self
     attr_accessor :debug_level
