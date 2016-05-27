@@ -188,10 +188,6 @@ class RDoc::RubyLex
     l
   end
 
-  def eof?
-    @io.eof?
-  end
-
   def getc_of_rests
     if @rests.empty?
       nil
@@ -250,70 +246,6 @@ class RDoc::RubyLex
     true
   end
   private :buf_input
-
-  def initialize_input
-    @ltype = nil
-    @quoted = nil
-    @indent = 0
-    @indent_stack = []
-    @lex_state = :EXPR_BEG
-    @space_seen = false
-    @here_header = false
-
-    @continue = false
-
-    @line = ""
-    @exp_line_no = @line_no
-  end
-
-  def each_top_level_statement
-    initialize_input
-    catch(:TERM_INPUT) do
-      loop do
-        begin
-          @continue = false
-          unless l = lex
-            throw :TERM_INPUT if @line == ''
-          else
-            #p l
-            @line.concat l
-            if @ltype or @continue or @indent > 0
-              next
-            end
-          end
-          if @line != "\n"
-            yield @line, @exp_line_no
-          end
-          break unless l
-          @line = ''
-          @exp_line_no = @line_no
-
-          @indent = 0
-          @indent_stack = []
-        rescue TerminateLineInput
-          initialize_input
-          get_readed
-        end
-      end
-    end
-  end
-
-  def lex
-    until (((tk = token).kind_of?(TkNL) || tk.kind_of?(TkEND_OF_SCRIPT)) &&
-           !@continue or
-      tk.nil?)
-      #p tk
-      #p @lex_state
-      #p self
-    end
-    line = get_readed
-    #      print self.inspect
-    if line == "" and tk.kind_of?(TkEND_OF_SCRIPT) || tk.nil?
-      nil
-    else
-      line
-    end
-  end
 
   def token
     #      require "tracer"
