@@ -16,8 +16,11 @@ end
 require 'rdoc/rdoc'
 
 begin
+  require"stackprof"
   r = RDoc::RDoc.new
-  r.document ARGV
+  StackProf.run(mode: :cpu, out: 'tmp/stackprof-cpu-myapp.dump') do
+    r.document ARGV
+  end
 rescue Errno::ENOSPC
   $stderr.puts 'Ran out of space creating documentation'
   $stderr.puts

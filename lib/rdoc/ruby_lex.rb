@@ -196,6 +196,19 @@ class RDoc::RubyLex
     end
   end
 
+  def skip(n)
+    n.times{ getc }
+  end
+
+  def scan(regexp)
+    while @rests.empty?
+      return false unless buf_input
+    end
+    return false unless regexp === @rests.join
+    skip($&.size)
+    $&
+  end
+
   def ungetc(c = nil)
     if @here_readed.empty?
       c2 = @readed.pop
@@ -767,24 +780,7 @@ class RDoc::RubyLex
              end
 
   def identify_identifier
-    token = ""
-    if peek(0) =~ /[$@]/
-      token.concat(c = getc)
-      if c == "@" and peek(0) == "@"
-        token.concat getc
-      end
-    end
-
-    while (ch = getc) =~ IDENT_RE do
-      print " :#{ch}: " if RDoc::RubyLex.debug?
-      token.concat ch
-    end
-
-    ungetc
-
-    if (ch == "!" || ch == "?") && token[0,1] =~ /\w/ && peek(0) != "="
-      token.concat getc
-    end
+    token = scan(/\A(\$|@@?)?[^\x00-\/:-@\[-^`{-\x7F]+(?(1)|(?:[!?](?!=))?)/)
 
     # almost fix token
 
