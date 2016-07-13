@@ -2252,6 +2252,11 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
 		REMOVE_ELEM(prev);
 		REMOVE_ELEM(&iobj->link);
 	    }
+	    else if (previ == BIN(send) || previ == BIN(opt_send_without_block)) {
+		INSN *piobj = (INSN *)prev;
+		struct rb_call_info *ci = (struct rb_call_info *)piobj->operands[0];
+		ci->flag |= VM_CALL_WITHOUT_VALUE;
+	    }
 	}
     }
 
