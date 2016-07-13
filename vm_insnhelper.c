@@ -1395,6 +1395,12 @@ vm_call_iseq_setup_2(rb_thread_t *th, rb_control_frame_t *cfp, struct rb_calling
     }
 }
 
+int
+rb_vm_want_value_p(void)
+{
+    return VM_FRAME_TYPE_WANT_VALUE_P(GET_THREAD()->cfp);
+}
+
 static inline VALUE
 vm_call_iseq_setup_normal(rb_thread_t *th, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc,
 			  int opt_pc, int param_size, int local_size)
@@ -1403,9 +1409,11 @@ vm_call_iseq_setup_normal(rb_thread_t *th, rb_control_frame_t *cfp, struct rb_ca
     const rb_iseq_t *iseq = def_iseq_ptr(me->def);
     VALUE *argv = cfp->sp - calling->argc;
     VALUE *sp = argv + param_size;
+    VALUE type = VM_FRAME_MAGIC_METHOD;
     cfp->sp = argv - 1 /* recv */;
 
-    vm_push_frame(th, iseq, VM_FRAME_MAGIC_METHOD, calling->recv,
+    if (ci->flag & VM_CALL_WITHOUT_VALUE) type |= VM_FRAME_FLAG_WITHOUT_VALUE;
+    vm_push_frame(th, iseq, type, calling->recv,
 		  VM_ENVVAL_BLOCK_PTR(calling->blockptr), (VALUE)me,
 		  iseq->body->iseq_encoded + opt_pc, sp,
 		  local_size - param_size,

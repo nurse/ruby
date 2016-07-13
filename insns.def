@@ -1065,6 +1065,28 @@ opt_send_without_block
 }
 
 /**
+  @c optimize
+  @e Invoke method without block
+  @j Invoke method without block
+ */
+DEFINE_INSN
+opt_send_without_block_without_value
+(CALL_INFO ci, CALL_CACHE cc)
+(...)
+(VALUE val) // inc += -ci->orig_argc;
+{
+    struct rb_calling_info calling;
+    VALUE v;
+    calling.blockptr = NULL;
+    vm_search_method(ci, cc, calling.recv = TOPN(calling.argc = ci->orig_argc));
+    v = (*(cc)->call)(th, GET_CFP(), (&calling), (ci), (cc));
+    if (v == Qundef) {
+	RESTORE_REGS();
+	NEXT_INSN();
+    }
+}
+
+/**
   @c method/iterator
   @e super(args) # args.size => num
   @j super を実行する。ci に必要な情報が格納されている。

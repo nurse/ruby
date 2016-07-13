@@ -888,6 +888,7 @@ enum vm_check_match_type {
 #define VM_CALL_TAILCALL        (0x01 << 7) /* located at tail position */
 #define VM_CALL_SUPER           (0x01 << 8) /* super */
 #define VM_CALL_OPT_SEND        (0x01 << 9) /* internal flag */
+#define VM_CALL_WITHOUT_VALUE   (0x01 <<10) /* without value */
 
 enum vm_special_object_type {
     VM_SPECIAL_OBJECT_VMCORE = 1,
@@ -923,8 +924,10 @@ enum vm_svar_index {
 #define VM_FRAME_FLAG_PASSED  0x0100
 #define VM_FRAME_FLAG_FINISH  0x0200
 #define VM_FRAME_FLAG_BMETHOD 0x0400
+#define VM_FRAME_FLAG_WITHOUT_VALUE 0x0800
 #define VM_FRAME_TYPE_FINISH_P(cfp)  (((cfp)->flag & VM_FRAME_FLAG_FINISH) != 0)
 #define VM_FRAME_TYPE_BMETHOD_P(cfp) (((cfp)->flag & VM_FRAME_FLAG_BMETHOD) != 0)
+#define VM_FRAME_TYPE_WANT_VALUE_P(cfp) (((cfp)->flag & VM_FRAME_FLAG_WITHOUT_VALUE) == 0)
 
 #define RUBYVM_CFUNC_FRAME_P(cfp) \
   (VM_FRAME_TYPE(cfp) == VM_FRAME_MAGIC_CFUNC)

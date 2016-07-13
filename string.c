@@ -4471,17 +4471,15 @@ static VALUE
 rb_str_slice_bang(int argc, VALUE *argv, VALUE str)
 {
     VALUE result;
-    VALUE buf[3];
-    int i;
-
     rb_check_arity(argc, 1, 2);
-    for (i=0; i<argc; i++) {
-	buf[i] = argv[i];
-    }
     str_modify_keep_cr(str);
-    result = rb_str_aref_m(argc, buf, str);
+    result = rb_str_aref_m(argc, argv, str);
     if (!NIL_P(result)) {
-	buf[i] = rb_str_new(0,0);
+	struct RString rep = {{T_STRING,rb_cString},{{0}}};
+	VALUE buf[3];
+	buf[0] = argv[0];
+	if (argc == 2) buf[1] = argv[1];
+	buf[argc] = (VALUE)&rep;
 	rb_str_aset_m(argc+1, buf, str);
     }
     return result;
