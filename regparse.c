@@ -6135,7 +6135,19 @@ node_extended_grapheme_cluster(Node** np, ScanEnv* env)
     np1 = node_new_cclass();
     if (IS_NULL(np1)) goto err;
     cc = NCCLASS(np1);
+    add_code_range(&(cc->mbuf), env, 0x1F308, 0x1F308);
+    add_code_range(&(cc->mbuf), env, 0x1F33E, 0x1F33E);
+    add_code_range(&(cc->mbuf), env, 0x1F373, 0x1F373);
     add_code_range(&(cc->mbuf), env, 0x1F393, 0x1F393);
+    add_code_range(&(cc->mbuf), env, 0x1F3A4, 0x1F3A4);
+    add_code_range(&(cc->mbuf), env, 0x1F3A8, 0x1F3A8);
+    add_code_range(&(cc->mbuf), env, 0x1F3EB, 0x1F3EB);
+    add_code_range(&(cc->mbuf), env, 0x1F3ED, 0x1F3ED);
+    add_code_range(&(cc->mbuf), env, 0x1F4BB, 0x1F4BC);
+    add_code_range(&(cc->mbuf), env, 0x1F527, 0x1F527);
+    add_code_range(&(cc->mbuf), env, 0x1F52C, 0x1F52C);
+    add_code_range(&(cc->mbuf), env, 0x1F680, 0x1F680);
+    add_code_range(&(cc->mbuf), env, 0x1F692, 0x1F692);
     r = add_ctype_to_cc(cc, propname2ctype(env, "Grapheme_Cluster_Break=Glue_After_Zwj"), 0, 0, env);
     if (r != 0) goto err;
 
@@ -6172,7 +6184,8 @@ node_extended_grapheme_cluster(Node** np, ScanEnv* env)
     cc = NCCLASS(np1);
     add_code_range(&(cc->mbuf), env, 0x2640, 0x2640);
     add_code_range(&(cc->mbuf), env, 0x2642, 0x2642);
-    add_code_range(&(cc->mbuf), env, 0x2695, 0x2695);
+    add_code_range(&(cc->mbuf), env, 0x2695, 0x2696);
+    add_code_range(&(cc->mbuf), env, 0x2708, 0x2708);
 
     tmp = node_new_list(np1, list2);
     if (IS_NULL(tmp)) goto err;
@@ -6248,6 +6261,14 @@ node_extended_grapheme_cluster(Node** np, ScanEnv* env)
     np1 = node_new_cclass();
     if (IS_NULL(np1)) goto err;
     cc = NCCLASS(np1);
+    add_code_range(&(cc->mbuf), env, 0x1F3C2, 0x1F3C2);
+    add_code_range(&(cc->mbuf), env, 0x1F3C7, 0x1F3C7);
+    add_code_range(&(cc->mbuf), env, 0x1F3CC, 0x1F3CC);
+    add_code_range(&(cc->mbuf), env, 0x1F3F3, 0x1F3F3);
+    add_code_range(&(cc->mbuf), env, 0x1F441, 0x1F441);
+    add_code_range(&(cc->mbuf), env, 0x1F46F, 0x1F46F);
+    add_code_range(&(cc->mbuf), env, 0x1F574, 0x1F574);
+    add_code_range(&(cc->mbuf), env, 0x1F6CC, 0x1F6CC);
     r = add_ctype_to_cc(cc, propname2ctype(env, "Grapheme_Cluster_Break=E_Base"), 0, 0, env);
     if (r != 0) goto err;
     r = add_ctype_to_cc(cc, propname2ctype(env, "Grapheme_Cluster_Break=E_Base_GAZ"), 0, 0, env);
