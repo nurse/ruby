@@ -14,6 +14,17 @@ core_ext.o: $(hdrdir)/ruby/subst.h
 core_ext.o: $(top_srcdir)/include/ruby.h
 core_ext.o: $(top_srcdir)/internal.h
 core_ext.o: core_ext.c
+fixable.o: $(RUBY_EXTCONF_H)
+fixable.o: $(arch_hdrdir)/ruby/config.h
+fixable.o: $(hdrdir)/ruby/backward.h
+fixable.o: $(hdrdir)/ruby/defines.h
+fixable.o: $(hdrdir)/ruby/intern.h
+fixable.o: $(hdrdir)/ruby/missing.h
+fixable.o: $(hdrdir)/ruby/ruby.h
+fixable.o: $(hdrdir)/ruby/st.h
+fixable.o: $(hdrdir)/ruby/subst.h
+fixable.o: $(top_srcdir)/include/ruby.h
+fixable.o: fixable.c
 init.o: $(RUBY_EXTCONF_H)
 init.o: $(arch_hdrdir)/ruby/config.h
 init.o: $(hdrdir)/ruby/backward.h

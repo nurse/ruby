@@ -359,7 +359,16 @@ rb_fix2ulong(VALUE x)
 #define RB_FIXNUM_P(f) (((int)(SIGNED_VALUE)(f))&RUBY_FIXNUM_FLAG)
 #define RB_POSFIXABLE(f) ((f) < RUBY_FIXNUM_MAX+1)
 #define RB_NEGFIXABLE(f) ((f) >= RUBY_FIXNUM_MIN)
+#ifdef HAVE_BUILTIN___BUILTIN_ADD_OVERFLOW
+/* real_type_class=8 is defined by typeclass.h of GCC */
+#define RB_FIXABLE(f) ({ SIGNED_VALUE c; \
+  __typeof__(__builtin_choose_expr(__builtin_classify_type(f)==8,0,(f))) x = (f); \
+  __builtin_choose_expr(__builtin_classify_type(f)==8, \
+    RB_POSFIXABLE(f) && RB_NEGFIXABLE(f),\
+    !__builtin_add_overflow(x,x,&c));})
+#else
 #define RB_FIXABLE(f) (RB_POSFIXABLE(f) && RB_NEGFIXABLE(f))
+#endif
 #define FIX2LONG(x) RB_FIX2LONG(x)
 #define FIX2ULONG(x) RB_FIX2ULONG(x)
 #define FIXNUM_P(f) RB_FIXNUM_P(f)
