@@ -786,6 +786,14 @@ class TestFloat < Test::Unit::TestCase
     o = Object.new
     def o.to_f; inf = Float::INFINITY; inf/inf; end
     assert_predicate(Float(o), :nan?)
+
+    assert_nil Float('0xfp', exception: false)
+    assert_nil Float('0xf.', exception: false)
+    assert_nil Float('0xf.p', exception: false)
+    assert_nil Float('0xf.p0', exception: false)
+    assert_nil Float('0xf.f', exception: false)
+    assert_nil Float('0xf.fp', exception: false)
+    assert_nil Float('0xf.fp', exception: false)
   end
 
   def test_invalid_str

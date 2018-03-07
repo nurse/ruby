@@ -3103,7 +3103,7 @@ rb_check_to_int(VALUE val)
 }
 
 static VALUE
-rb_convert_to_integer(VALUE val, int base)
+rb_convert_to_integer(VALUE val, int base, bool exception)
 {
     VALUE tmp;
 
@@ -3119,23 +3119,37 @@ rb_convert_to_integer(VALUE val, int base)
 	return val;
     }
     else if (RB_TYPE_P(val, T_STRING)) {
-	return rb_str_to_inum(val, base, TRUE);
+        if (exception) {
+            return rb_str_to_inum(val, base, TRUE);
+        }
+        else {
+            const char *str;
+            char *end;
+            long len;
+            rb_encoding *enc = rb_enc_get(val);
+            if (!rb_enc_asciicompat(enc)) return Qnil;
+            RSTRING_GETMEM(val, str, len);
+            tmp = rb_cstr_parse_inum(str, len, &end, base);
+            if (str + len != end) return Qnil;
+            return tmp;
+        }
     }
     else if (NIL_P(val)) {
 	if (base != 0) goto arg_error;
+        if (!exception) return Qnil;
 	rb_raise(rb_eTypeError, "can't convert nil into Integer");
     }
     if (base != 0) {
 	tmp = rb_check_string_type(val);
 	if (!NIL_P(tmp)) return rb_str_to_inum(tmp, base, TRUE);
       arg_error:
+        if (!exception) return Qnil;
 	rb_raise(rb_eArgError, "base specified for non string value");
     }
     tmp = convert_type(val, "Integer", "to_int", FALSE);
-    if (NIL_P(tmp)) {
-	return rb_to_integer(val, "to_i");
-    }
-    return tmp;
+    if (!NIL_P(tmp)) return tmp;
+    if (exception) return rb_to_integer(val, "to_i");
+    return convert_type(val, "Integer", "to_i", FALSE);
 
 }
 
@@ -3148,7 +3162,7 @@ rb_convert_to_integer(VALUE val, int base)
 VALUE
 rb_Integer(VALUE val)
 {
-    return rb_convert_to_integer(val, 0);
+    return rb_convert_to_integer(val, 0, true);
 }
 
 /*
@@ -3179,19 +3193,24 @@ static VALUE
 rb_f_integer(int argc, VALUE *argv, VALUE obj)
 {
     VALUE arg = Qnil;
+    VALUE opts = Qnil;
+    VALUE exception = Qtrue;
+    VALUE vbase = Qundef;
     int base = 0;
+    static ID int_kwds[1];
 
-    switch (argc) {
-      case 2:
-	base = NUM2INT(argv[1]);
-      case 1:
-	arg = argv[0];
-	break;
-      default:
-	/* should cause ArgumentError */
-	rb_scan_args(argc, argv, "11", NULL, NULL);
+    rb_scan_args(argc, argv, "11:", &arg, &vbase, &opts);
+    if (!NIL_P(vbase)) {
+        base = NUM2INT(vbase);
     }
-    return rb_convert_to_integer(arg, base);
+    if (!NIL_P(opts)) {
+        if (!int_kwds[0]) {
+            int_kwds[0] = rb_intern_const("exception");
+        }
+        rb_get_kwargs(opts, int_kwds, 0, 1, &exception);
+        if (exception == Qundef) exception = Qtrue;
+    }
+    return rb_convert_to_integer(arg, base, RTEST(exception));
 }
 
 /*!
@@ -3356,7 +3375,7 @@ implicit_conversion_to_float(VALUE val)
 }
 
 static int
-to_float(VALUE *valp)
+to_float(VALUE *valp, bool exception)
 {
     VALUE val = *valp;
     if (SPECIAL_CONST_P(val)) {
@@ -3367,9 +3386,12 @@ to_float(VALUE *valp)
 	else if (FLONUM_P(val)) {
 	    return T_FLOAT;
 	}
-	else {
+	else if (exception) {
 	    conversion_to_float(val);
-	}
+        }
+        else {
+            return T_NIL;
+        }
     }
     else {
 	int type = BUILTIN_TYPE(val);
@@ -3389,6 +3411,25 @@ to_float(VALUE *valp)
     return T_NONE;
 }
 
+static VALUE
+rb_Float0(VALUE val, bool exception) {
+    VALUE v;
+    switch (to_float(&val, exception)) {
+      case T_FLOAT:
+	return val;
+      case T_STRING:
+	return DBL2NUM(rb_str_to_dbl(val, exception));
+      case T_NIL:
+        return Qnil;
+    }
+
+    v = convert_type(val, "Float", "to_f", (int)exception);
+    if (exception && TYPE(v) != T_FLOAT) {
+        conversion_mismatch(val, "Float", "to_f", v);
+    }
+    return v;
+}
+
 /*!
  * Equivalent to \c Kernel\#Float in Ruby.
  *
@@ -3398,16 +3439,10 @@ to_float(VALUE *valp)
 VALUE
 rb_Float(VALUE val)
 {
-    switch (to_float(&val)) {
-      case T_FLOAT:
-	return val;
-      case T_STRING:
-	return DBL2NUM(rb_str_to_dbl(val, TRUE));
-    }
-    return rb_convert_type(val, T_FLOAT, "Float", "to_f");
+    return rb_Float0(val, true);
 }
 
-static VALUE FUNC_MINIMIZED(rb_f_float(VALUE obj, VALUE arg)); /*!< \private */
+static VALUE FUNC_MINIMIZED(rb_f_float(int agc, VALUE *argv, VALUE obj)); /*!< \private */
 
 /*
  *  call-seq:
@@ -3425,9 +3460,22 @@ static VALUE FUNC_MINIMIZED(rb_f_float(VALUE obj, VALUE arg)); /*!< \private */
  */
 
 static VALUE
-rb_f_float(VALUE obj, VALUE arg)
+rb_f_float(int argc, VALUE *argv, VALUE obj)
 {
-    return rb_Float(arg);
+    VALUE arg = Qnil;
+    VALUE opts = Qnil;
+    VALUE exception = Qtrue;
+    static ID int_kwds[1];
+
+    rb_scan_args(argc, argv, "10:", &arg, &opts);
+    if (!NIL_P(opts)) {
+        if (!int_kwds[0]) {
+            int_kwds[0] = rb_intern_const("exception");
+        }
+        rb_get_kwargs(opts, int_kwds, 0, 1, &exception);
+        if (exception == Qundef) exception = Qtrue;
+    }
+    return rb_Float0(arg, RTEST(exception));
 }
 
 static VALUE
@@ -3448,7 +3496,7 @@ numeric_to_float(VALUE val)
 VALUE
 rb_to_float(VALUE val)
 {
-    switch (to_float(&val)) {
+    switch (to_float(&val, true)) {
       case T_FLOAT:
 	return val;
     }
@@ -3986,7 +4034,7 @@ InitVM_Object(void)
     rb_define_global_function("format", rb_f_sprintf, -1);  /* in sprintf.c */
 
     rb_define_global_function("Integer", rb_f_integer, -1);
-    rb_define_global_function("Float", rb_f_float, 1);
+    rb_define_global_function("Float", rb_f_float, -1);
 
     rb_define_global_function("String", rb_f_string, 1);
     rb_define_global_function("Array", rb_f_array, 1);

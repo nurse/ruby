@@ -1620,15 +1620,13 @@ issign(int c)
 }
 
 static int
-read_sign(const char **s,
-	  char **b)
+read_sign(const char **s)
 {
     int sign = '?';
 
     if (issign(**s)) {
-	sign = **b = **s;
+	sign = **s;
 	(*s)++;
-	(*b)++;
     }
     return sign;
 }
@@ -1752,18 +1750,32 @@ isimagunit(int c)
 	    c == 'j' || c == 'J');
 }
 
-static VALUE
-str2num(char *s)
+static char *
+complex_mempbrk(const char *s, const char *se, const char *charset)
 {
-    if (strchr(s, '/'))
+    while (s < se) {
+        const char *p = charset;
+        while (*p) {
+            if (*p == *s) return s;
+        }
+    }
+    return NULL;
+}
+
+static VALUE
+str2num(VALUE str)
+{
+    char *s = RSTRING_PTR(str);
+    char *se = RSTRING_END(str);
+    if (memchr(s, '/', se-s))
 	return rb_cstr_to_rat(s, 0);
-    if (strpbrk(s, ".eE"))
-	return DBL2NUM(rb_cstr_to_dbl(s, 0));
-    return rb_cstr_to_inum(s, 10, 0);
+    if (complex_mempbrk(s, se, ".eE"))
+	return DBL2NUM(rb_str_to_dbl(str, FALSE));
+    return rb_str_to_inum(str, 10, 0);
 }
 
 static int
-read_comp(const char **s, int strict,
+read_comp(const char **s, const char *se, int strict,
 	  VALUE *ret, char **b)
 {
     char *bb;
@@ -1845,32 +1857,32 @@ read_comp(const char **s, int strict,
 }
 
 inline static void
-skip_ws(const char **s)
+skip_ws(const char **s, const char *se)
 {
-    while (isspace((unsigned char)**s))
+    while (isspace((unsigned char)**s) && *s < se)
 	(*s)++;
 }
 
 static int
-parse_comp(const char *s, int strict,
+parse_comp(const char *s, size_t len, int strict,
 	   VALUE *num)
 {
-    char *buf, *b;
+    char *buf, *se;
     VALUE tmp;
     int ret = 1;
 
-    buf = ALLOCV_N(char, tmp, strlen(s) + 1);
-    b = buf;
+    buf = ALLOCV_N(char, tmp, len + 1);
+    se = buf + len;
 
-    skip_ws(&s);
-    if (!read_comp(&s, strict, num, &b)) {
+    skip_ws(&s, se);
+    if (!read_comp(&s, se, strict, num, &buf)) {
 	ret = 0;
     }
     else {
-	skip_ws(&s);
+	skip_ws(&s, se);
 
 	if (strict)
-	    if (*s != '\0')
+	    if (*s != se)
 		ret = 0;
     }
     ALLOCV_END(tmp);
@@ -1888,19 +1900,16 @@ string_to_c_strict(VALUE self)
 
     s = RSTRING_PTR(self);
 
-    if (!s || memchr(s, '\0', RSTRING_LEN(self)))
+    if (memchr(s, '\0', RSTRING_LEN(self)))
 	rb_raise(rb_eArgError, "string contains null byte");
 
-    if (s && s[RSTRING_LEN(self)]) {
+    if (s[RSTRING_LEN(self)]) {
 	rb_str_modify(self);
 	s = RSTRING_PTR(self);
 	s[RSTRING_LEN(self)] = '\0';
     }
 
-    if (!s)
-	s = (char *)"";
-
-    if (!parse_comp(s, 1, &num)) {
+    if (!parse_comp(s, RSTRING_LEN(self), 1, &num)) {
 	rb_raise(rb_eArgError, "invalid value for convert(): %+"PRIsVALUE,
 		 self);
     }
@@ -1941,16 +1950,7 @@ string_to_c(VALUE self)
 
     s = RSTRING_PTR(self);
 
-    if (s && s[RSTRING_LEN(self)]) {
-	rb_str_modify(self);
-	s = RSTRING_PTR(self);
-	s[RSTRING_LEN(self)] = '\0';
-    }
-
-    if (!s)
-	s = (char *)"";
-
-    (void)parse_comp(s, 0, &num);
+    (void)parse_comp(s, RSTRING_LEN(self), 0, &num);
 
     return num;
 }

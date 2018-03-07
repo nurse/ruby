@@ -114,6 +114,18 @@ class TestInteger < Test::Unit::TestCase
       assert_equal (1 << 100), Integer((1 << 100).to_f)
       assert_equal 1, Integer(1.0)
     end;
+
+    assert_nil(Integer("a", exception: false))
+    assert_nil(Integer("0a", exception: false))
+    assert_nil(Integer("\u3042", exception: false))
+    assert_nil(Integer("\u3042".encode("utf-16be"), exception: false))
+    assert_nil(Integer("\u3042".encode("utf-16le"), exception: false))
+    assert_nil(Integer(:a, exception: false))
+    assert_nil(Integer(:"1a", exception: false))
+    assert_nil(Integer(:"\u3042", exception: false))
+    assert_nil(Integer(:"0\u3042", exception: false))
+    assert_nil(Integer(Object.new, exception: false))
+    assert_nil(Integer(nil, exception: false))
   end
 
   def test_int_p
