@@ -56,7 +56,7 @@ for:
     - SET BITS=%BITS:x=%
     - SET OPENSSL_DIR=c:\OpenSSL-Win%BITS%
     - SET ruby_path=C:\Ruby%ruby_version:-x86=%
-    - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\mingw64\bin;C:\msys64\usr\bin
+    - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\mingw64\bin;C:\msys64\bin;C:\msys64\usr\bin
     - ruby --version
     - mkdir \usr\local\bin
     - mkdir \usr\local\include
