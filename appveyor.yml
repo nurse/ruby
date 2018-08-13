@@ -61,20 +61,26 @@ for:
     - mkdir \usr\local\bin
     - mkdir \usr\local\include
     - mkdir \usr\local\lib
-    - set /a JOBS=%NUMBER_OF_PROCESSORS%
   build_script:
     - cd %APPVEYOR_BUILD_FOLDER%
-    - bash -c 'autoconf'
-    - bash -c './configure --disable-install-doc --prefix=/usr/local'
-    - mingw32-make "-j%JOBS%"
-    - mingw32-make "-j%JOBS%" install
+    - |
+      bash -ex -c '
+        # Upgrade msys2
+        pacman --noconfirm --sync --refresh --refresh pacman
+        pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
+
+        # Install build dependencies
+        bash -xlc "pacman --noconfirm -S --needed base-devel"
+
+        # Build ruby
+        autoconf
+        ./configure --disable-install-doc --prefix=/usr/local
+        mingw32-make -j$(nproc)
+        mingw32-make -j$(nproc) install
+      '
     - \usr\bin\ruby -v -e "p :locale => Encoding.find('locale'), :filesystem => Encoding.find('filesystem')"
   test_script:
-    - set /a JOBS=%NUMBER_OF_PROCESSORS%
-    - mingw32-make btest
-    - mingw32-make test-basic
-    - mingw32-make "-j%JOBS%" test-all RUBY_FORCE_TEST_JIT=1
-    - mingw32-make test-spec
+    - echo hello
 -
   matrix:
     only:
