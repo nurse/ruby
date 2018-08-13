@@ -72,7 +72,7 @@ for:
 
     #     pacman --noconfirm -S --needed base-devel
     #   '
-    - C:\msys64\%MSYSTEM%\bin\sh -c autoconf
+    - C:\msys64\usr\bin\sh -c autoconf
     - |
       bash -ex -c '
         ./configure --disable-install-doc --prefix=/usr/local
