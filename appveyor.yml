@@ -77,7 +77,7 @@ for:
         mingw32-make -j$(nproc)
         mingw32-make -j$(nproc) install
       '
-    - C:\msys64\usr\bin\autoconf
+    - sh -c C:\msys64\usr\bin\autoconf
     - |
       bash -ex -c '
         ./configure --disable-install-doc --prefix=/usr/local
