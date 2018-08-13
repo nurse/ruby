@@ -72,6 +72,7 @@ for:
 
     #     pacman --noconfirm -S --needed base-devel
     #   '
+    - sh -c 'which autoconf'
     - C:\msys64\usr\bin\sh -c autoconf
     - |
       bash -ex -c '
