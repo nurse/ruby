@@ -64,8 +64,8 @@ for:
     - set /a JOBS=%NUMBER_OF_PROCESSORS%
   build_script:
     - cd %APPVEYOR_BUILD_FOLDER%
-    - autoconf
-    - .\configure --disable-install-doc --prefix=/usr/local --with-openssl-dir=%OPENSSL_DIR:\=/%
+    - bash -c 'autoconf'
+    - bash -c './configure --disable-install-doc --prefix=/usr/local'
     - mingw32-make "-j%JOBS%"
     - mingw32-make "-j%JOBS%" install
     - \usr\bin\ruby -v -e "p :locale => Encoding.find('locale'), :filesystem => Encoding.find('filesystem')"
