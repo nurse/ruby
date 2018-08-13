@@ -70,7 +70,7 @@ for:
 
         pacman --noconfirm -S --needed base-devel autoconf
 
-        find / |grep autoconf
+        export PATH="/usr/bin:${PATH}"
         autoconf
         ./configure --disable-install-doc --prefix=/usr/local
         mingw32-make -j$(nproc)
