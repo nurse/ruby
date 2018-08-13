@@ -71,13 +71,11 @@ for:
         pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
 
         pacman --noconfirm -S --needed base-devel
-
-        /c/msys64/usr/bin/autoconf
-        ./configure --disable-install-doc --prefix=/usr/local
-        mingw32-make -j$(nproc)
-        mingw32-make -j$(nproc) install
       '
-    - sh -c C:\msys64\usr\bin\autoconf
+    - |
+      bash -ex -c "
+      $(which autoconf)
+      "
     - |
       bash -ex -c '
         ./configure --disable-install-doc --prefix=/usr/local
