@@ -77,6 +77,14 @@ for:
         mingw32-make -j$(nproc)
         mingw32-make -j$(nproc) install
       '
+    - autoconf
+    #- C:\msys64\usr\bin\autoconf
+    - |
+      bash -ex -c '
+        ./configure --disable-install-doc --prefix=/usr/local
+        mingw32-make -j$(nproc)
+        mingw32-make -j$(nproc) install
+      '
     - \usr\bin\ruby -v -e "p :locale => Encoding.find('locale'), :filesystem => Encoding.find('filesystem')"
   test_script:
     - echo hello
