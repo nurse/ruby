@@ -1,7 +1,14 @@
 ---
+version: '{build}'
 shallow_clone: true
 platform:
   - x64
+environment:
+  ruby_version: "24-%Platform%"
+  zlib_version: "1.2.11"
+  matrix:
+    - vs: "120"
+    - mingw: "7.3.0"
 matrix:
   fast_finish: true
 branches:
@@ -39,11 +46,8 @@ notifications:
     on_build_status_changed: true
 for:
 -
-  version: 'mswin.{build}'
-  environment:
-    ruby_version: "24-%Platform%"
-    zlib_version: "1.2.11"
-    matrix:
+  matrix:
+    only:
       - vs: "120"
   install:
     - ver
@@ -91,12 +95,9 @@ for:
     #- nmake -l "TESTOPTS=-q -j%JOBS%" test-all RUBY_FORCE_TEST_JIT=1
     #- nmake -l test-spec
 -
-  version: 'mingw.{build}'
-  environment:
-    ruby_version: "24-%Platform%"
-    zlib_version: "1.2.11"
-    matrix:
-      - vs: "120"
+  matrix:
+    only:
+      - mingw: "7.3.0"
   install:
     - ver
     - chcp
