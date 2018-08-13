@@ -39,6 +39,7 @@ notifications:
     on_build_status_changed: true
 for:
 -
+  version: 'mswin.{build}'
   environment:
     ruby_version: "24-%Platform%"
     zlib_version: "1.2.11"
@@ -90,6 +91,7 @@ for:
     #- nmake -l "TESTOPTS=-q -j%JOBS%" test-all RUBY_FORCE_TEST_JIT=1
     #- nmake -l test-spec
 -
+  version: 'mingw.{build}'
   environment:
     ruby_version: "24-%Platform%"
     zlib_version: "1.2.11"
