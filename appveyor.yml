@@ -65,19 +65,10 @@ for:
     - mkdir \usr\local\lib
   build_script:
     - cd %APPVEYOR_BUILD_FOLDER%
-    - |
-      bash -ex -c '
-        pacman --noconfirm --sync --refresh --refresh pacman
-        pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
-
-        pacman --noconfirm -S --needed base-devel
-
-        /c/msys64/usr/bin/autoconf
-        ./configure --disable-install-doc --prefix=/usr/local
-        mingw32-make -j$(nproc)
-        mingw32-make -j$(nproc) install
-      '
-    - sh -c C:\msys64\usr\bin\autoconf
+    - bash -e -c "pacman --noconfirm --sync --refresh --refresh pacman"
+    - bash -e -c "pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade"
+    - bash -e -c "pacman --noconfirm -S --needed base-devel"
+    - bash -e -c `which autoconf`
     - |
       bash -ex -c '
         ./configure --disable-install-doc --prefix=/usr/local
