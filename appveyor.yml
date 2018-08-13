@@ -56,7 +56,7 @@ for:
     - SET BITS=%BITS:x=%
     - SET OPENSSL_DIR=c:\OpenSSL-Win%BITS%
     - SET ruby_path=C:\Ruby%ruby_version:-x86=%
-    - SET PATH=\usr\local\bin;%ruby_path%\bin;C:\msys64\%MSYSTEM%\bin;C:\msys64\usr\bin;%PATH%
+    - SET PATH=\usr\local\bin;%ruby_path%\bin;C:\msys64\MINGW64\bin;C:\msys64\usr\bin;%PATH%
     - ruby --version
     - mkdir \usr\local\bin
     - mkdir \usr\local\include
@@ -68,7 +68,7 @@ for:
         pacman --noconfirm --sync --refresh --refresh pacman
         pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
 
-        pacman --noconfirm -S --needed base-devel
+        pacman --noconfirm -S --needed base-devel autoconf
 
         autoconf
         ./configure --disable-install-doc --prefix=/usr/local
