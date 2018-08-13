@@ -52,21 +52,17 @@ for:
       - MSYS2_ARCH: x86_64
         MSYSTEM: MINGW64
   install:
-    # - ver
-    # - chcp
-    # - SET BITS=%Platform:x86=32%
-    # - SET BITS=%BITS:x=%
-    # - SET OPENSSL_DIR=c:\OpenSSL-Win%BITS%
-    # - SET ruby_path=C:\Ruby%ruby_version:-x86=%
-    # - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\%MSYSTEM%\bin;C:\msys64\usr\bin
-    # - ruby --version
+    - ver
+    - chcp
+    - SET BITS=%Platform:x86=32%
+    - SET BITS=%BITS:x=%
+    - SET OPENSSL_DIR=c:\OpenSSL-Win%BITS%
+    - SET ruby_path=C:\Ruby%ruby_version:-x86=%
+    - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\%MSYSTEM%\bin;C:\msys64\usr\bin
+    - ruby --version
     - mkdir \usr\local\bin
     - mkdir \usr\local\include
     - mkdir \usr\local\lib
-    - set PATH=C:\ruby\local\bin;C:\msys64\usr\bin;C:\Program Files\7-Zip;C:\Program Files\AppVeyor\BuildAgent;C:\Program Files\Git\cmd;C:\Windows\system32
-    - |
-      appveyor DownloadFile https://ci.appveyor.com/api/projects/MSP-Greg/ruby-loco/artifacts/ruby_trunk.7z -FileName C:/ruby_trunk.7z &
-      7z x C:\ruby_trunk.7z -oC:\ruby_trunk
   build_script:
     - cd %APPVEYOR_BUILD_FOLDER%
     - |
