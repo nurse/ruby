@@ -65,13 +65,9 @@ for:
     - mkdir \usr\local\lib
   build_script:
     - cd %APPVEYOR_BUILD_FOLDER%
-    - |
-      sh -ex -c '
-        pacman --noconfirm --sync --refresh --refresh pacman
-        pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
-
-        pacman --noconfirm -S --needed base-devel
-      '
+    - sh -c "pacman --noconfirm --sync --refresh --refresh pacman"
+    - sh -c "pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade"
+    - sh -c "pacman --noconfirm -S --needed base-devel"
     - sh -c `which autoconf`
     - |
       sh -ex -c '
