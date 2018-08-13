@@ -7,7 +7,8 @@ environment:
   ruby_version: "24-%Platform%"
   zlib_version: "1.2.11"
   matrix:
-    - mingw: "7.3.0"
+    - MSYS2_ARCH: x86_64
+      MSYSTEM: MINGW64
     - vs: "120"
 matrix:
   fast_finish: true
@@ -48,7 +49,8 @@ for:
 -
   matrix:
     only:
-      - mingw: "7.3.0"
+      - MSYS2_ARCH: x86_64
+        MSYSTEM: MINGW64
   install:
     - ver
     - chcp
@@ -56,7 +58,7 @@ for:
     - SET BITS=%BITS:x=%
     - SET OPENSSL_DIR=c:\OpenSSL-Win%BITS%
     - SET ruby_path=C:\Ruby%ruby_version:-x86=%
-    - SET PATH=\usr\local\bin;%ruby_path%\bin;C:\msys64\usr\bin;%PATH%
+    - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\%MSYSTEM%\bin;C:\msys64\usr\bin
     - ruby --version
     - mkdir \usr\local\bin
     - mkdir \usr\local\include
@@ -68,9 +70,16 @@ for:
         pacman --noconfirm --sync --refresh --refresh pacman
         pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
 
-        pacman --noconfirm -S --needed base-devel autoconf
+        pacman --noconfirm -S --needed base-devel
 
-        /bin/autoconf
+        which -a autoconf
+        ls -la /bin/autoconf
+        ls -la /usr/bin/autoconf
+        ls -la C:\msys64\usr\bin
+        ls -la C:\msys64\%MSYSTEM%\bin
+        ls -la C:\msys64\MINGW64\bin
+
+        autoconf
         .\configure --disable-install-doc --prefix=/usr/local
         mingw32-make -j$(nproc)
         mingw32-make -j$(nproc) install
