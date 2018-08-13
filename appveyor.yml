@@ -65,14 +65,11 @@ for:
     - cd %APPVEYOR_BUILD_FOLDER%
     - |
       bash -ex -c '
-        # Upgrade msys2
         pacman --noconfirm --sync --refresh --refresh pacman
         pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade
 
-        # Install build dependencies
         bash -xlc "pacman --noconfirm -S --needed base-devel"
 
-        # Build ruby
         autoconf
         ./configure --disable-install-doc --prefix=/usr/local
         mingw32-make -j$(nproc)
