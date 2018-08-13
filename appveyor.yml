@@ -65,10 +65,10 @@ for:
     - mkdir \usr\local\lib
   build_script:
     - cd %APPVEYOR_BUILD_FOLDER%
-    - sh -c "pacman --noconfirm --sync --refresh --refresh pacman"
-    - sh -c "pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade"
-    - sh -c "pacman --noconfirm -S --needed base-devel"
-    - sh -c `which autoconf`
+    - bash -lc "pacman --noconfirm --sync --refresh --refresh pacman"
+    - bash -lc "pacman --noconfirm --sync --refresh --refresh --sysupgrade --sysupgrade"
+    - bash -lc "pacman --noconfirm -S --needed base-devel"
+    - bash -lc `which autoconf`
     - |
       sh -ex -c '
         ./configure --disable-install-doc --prefix=/usr/local
