@@ -9,7 +9,7 @@ jobs:
     vmImage: 'ubuntu-16.04'
   steps:
   - script: |
-      auoconf
+      autoconf
       ./configure
       make
     displayName: 'make'
@@ -18,7 +18,7 @@ jobs:
     vmImage: 'macOS-10.13'
   steps:
   - script: |
-      auoconf
+      autoconf
       ./configure
       make
     displayName: 'make'
