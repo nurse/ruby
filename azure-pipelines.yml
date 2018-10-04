@@ -9,6 +9,7 @@ jobs:
     vmImage: 'ubuntu-16.04'
   steps:
   - script: |
+      sudo apt-get update && sudo apt-get install ruby bison
       autoconf
       ./configure
       make
