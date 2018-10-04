@@ -8,6 +8,7 @@ pool:
 
 steps:
 - script: |
+    auoconf
     ./configure
     make
   displayName: 'make'
