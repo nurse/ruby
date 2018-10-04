@@ -20,6 +20,7 @@ jobs:
   steps:
   - script: |
       sudo xcode-select -s /Applications/Xcode_8.3.3.app/Contents/Developer
+      brew install autoconf
       autoconf
       ./configure
       make
