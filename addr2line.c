@@ -22,7 +22,7 @@
 #include "missing/stdbool.h"
 #endif
 
-#ifdef USE_ELF
+#if defined(USE_ELF) || defined(HAVE_MACH_O_LOADER_H)
 
 #include <fcntl.h>
 #include <limits.h>
@@ -34,12 +34,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#ifdef __OpenBSD__
-#include <elf_abi.h>
-#else
-#include <elf.h>
-#endif
 
 /* Make alloca work the best possible way.  */
 #ifdef __GNUC__
@@ -64,6 +58,47 @@ void *alloca();
 # include <dlfcn.h>
 #endif
 
+#ifdef HAVE_MACH_O_LOADER_H
+# include <mach-o/loader.h>
+#endif
+
+#ifdef USE_ELF
+# ifdef __OpenBSD__
+#  include <elf_abi.h>
+# else
+#  include <elf.h>
+# endif
+
+#ifndef ElfW
+# if SIZEOF_VOIDP == 8
+#  define ElfW(x) Elf64##_##x
+# else
+#  define ElfW(x) Elf32##_##x
+# endif
+#endif
+#ifndef ELF_ST_TYPE
+# if SIZEOF_VOIDP == 8
+#  define ELF_ST_TYPE ELF64_ST_TYPE
+# else
+#  define ELF_ST_TYPE ELF32_ST_TYPE
+# endif
+#endif
+#endif
+
+#ifdef SHF_COMPRESSED
+# if defined(ELFCOMPRESS_ZLIB) && defined(HAVE_LIBZ)
+   /* FreeBSD 11.0 lacks ELFCOMPRESS_ZLIB */
+#  include <zlib.h>
+#  define SUPPORT_COMPRESSED_DEBUG_LINE
+# endif
+#else /* compatibility with glibc < 2.22 */
+# define SHF_COMPRESSED 0
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 #define DW_LNS_copy                     0x01
 #define DW_LNS_advance_pc               0x02
 #define DW_LNS_advance_line             0x03
@@ -83,34 +118,6 @@ void *alloca();
 #define DW_LNE_define_file              0x03
 #define DW_LNE_set_discriminator        0x04  /* DWARF4 */
 
-#ifndef ElfW
-# if SIZEOF_VOIDP == 8
-#  define ElfW(x) Elf64##_##x
-# else
-#  define ElfW(x) Elf32##_##x
-# endif
-#endif
-#ifndef ELF_ST_TYPE
-# if SIZEOF_VOIDP == 8
-#  define ELF_ST_TYPE ELF64_ST_TYPE
-# else
-#  define ELF_ST_TYPE ELF32_ST_TYPE
-# endif
-#endif
-#ifndef PATH_MAX
-#define PATH_MAX 4096
-#endif
-
-#ifdef SHF_COMPRESSED
-# if defined(ELFCOMPRESS_ZLIB) && defined(HAVE_LIBZ)
-   /* FreeBSD 11.0 lacks ELFCOMPRESS_ZLIB */
-#  include <zlib.h>
-#  define SUPPORT_COMPRESSED_DEBUG_LINE
-# endif
-#else /* compatibility with glibc < 2.22 */
-# define SHF_COMPRESSED 0
-#endif
-
 PRINTF_ARGS(static int kprintf(const char *fmt, ...), 1, 2);
 
 typedef struct line_info {
@@ -127,9 +134,9 @@ typedef struct line_info {
 } line_info_t;
 
 struct dwarf_section {
-    ElfW(Shdr) *shdr;
     char *ptr;
     size_t size;
+    uint64_t flags;
 };
 
 typedef struct obj_info {
@@ -1463,6 +1470,7 @@ debug_info_read(DebugInfoReader *reader, int num_traces, void **traces,
     } while (reader->level > 0);
 }
 
+#ifdef USE_ELF
 static unsigned long
 uncompress_debug_section(ElfW(Shdr) *shdr, char *file, char **ptr)
 {
@@ -1490,28 +1498,6 @@ fail:
     return 0;
 }
 
-void hexdump0(const unsigned char *p, size_t n) {
-    size_t i;
-    fprintf(stderr, "     0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F\n");
-    for (i=0; i < n; i++){
-        switch (i & 15) {
-          case 0:
-            fprintf(stderr, "%02zd: %02X ", i/16, p[i]);
-            break;
-          case 15:
-            fprintf(stderr, "%02X\n", p[i]);
-            break;
-          default:
-            fprintf(stderr, "%02X ", p[i]);
-            break;
-        }
-    }
-    if ((i & 15) != 15) {
-        fprintf(stderr, "\n");
-    }
-}
-#define hexdump(p,n) hexdump0((const unsigned char *)p, n)
-
 /* read file and fill lines */
 static uintptr_t
 fill_lines(int num_traces, void **traces, int check_debuglink,
@@ -1519,7 +1505,6 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
 {
     int i, j;
     char *shstr;
-    char *section_name;
     ElfW(Ehdr) *ehdr;
     ElfW(Shdr) *shdr, *shstr_shdr;
     ElfW(Shdr) *gnu_debuglink_shdr = NULL;
@@ -1577,7 +1562,7 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
     shstr = file + shstr_shdr->sh_offset;
 
     for (i = 0; i < ehdr->e_shnum; i++) {
-	section_name = shstr + shdr[i].sh_name;
+        char *section_name = shstr + shdr[i].sh_name;
 	switch (shdr[i].sh_type) {
 	  case SHT_STRTAB:
 	    if (!strcmp(section_name, ".strtab")) {
@@ -1607,11 +1592,21 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
                     ".debug_ranges",
                     ".debug_str"
                 };
+
                 for (j=0; j < DWARF_SECTION_COUNT; j++) {
-                    if (strcmp(section_name, debug_section_names[j]) == 0) {
-                        obj_dwarf_section_at(obj, j)->shdr = &shdr[i];
-                        break;
+                    struct dwarf_section *s = obj_dwarf_section_at(obj, j);
+
+                    if (strcmp(section_name, debug_section_names[j]) != 0)
+                        continue;
+
+                    s->ptr = file + shdr[i].sh_offset;
+                    s->size = shdr[i].sh_size;
+                    s->flags = shdr[i].sh_flags;
+                    if (s->flags & SHF_COMPRESSED) {
+                        s->size = uncompress_debug_section(&shdr[i], file, &s->ptr);
+                        if (!s->size) goto fail;
                     }
+                    break;
                 }
             }
 	    break;
@@ -1634,6 +1629,7 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
                     if (ELF_ST_TYPE(sym->st_info) != STT_FUNC || sym->st_size == 0) continue;
                     s = dlsym(handle, strtab + sym->st_name);
                     if (s && dladdr(s, &info)) {
+		obj->base_addr = dladdr_fbase;
                         dladdr_fbase = (uintptr_t)info.dli_fbase;
                         break;
                     }
@@ -1648,21 +1644,6 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
 		obj->base_addr = dladdr_fbase;
 	    }
 	}
-    }
-
-    if (obj->debug_info.shdr) {
-        size_t j;
-        for (j=0; j < DWARF_SECTION_COUNT; j++) {
-            struct dwarf_section *s = obj_dwarf_section_at(obj, j);
-            ElfW(Shdr) *shdr = s->shdr;
-            if (!shdr) break;
-            s->ptr = file + shdr->sh_offset;
-            s->size = shdr->sh_size;
-            if (shdr->sh_flags & SHF_COMPRESSED) {
-                s->size = uncompress_debug_section(shdr, file, &s->ptr);
-                if (!s->size) goto fail;
-            }
-        }
     }
 
     if (obj->debug_info.ptr && obj->debug_abbrev.ptr) {
@@ -1727,6 +1708,173 @@ finish:
 fail:
     return (uintptr_t)-1;
 }
+#else /* Mach-O */
+/* read file and fill lines */
+static uintptr_t
+fill_lines(int num_traces, void **traces, int check_debuglink,
+        obj_info_t **objp, line_info_t *lines, int offset)
+{
+    int fd;
+    off_t filesize;
+    char *file, *p;
+    obj_info_t *obj = *objp;
+    struct mach_header_64 *header;
+    uintptr_t dladdr_fbase = 0;
+
+    {
+        char *s = binary_filename;
+        char *base = strrchr(binary_filename, '/')+1;
+        size_t max = PATH_MAX;
+        size_t size = strlen(binary_filename);
+        size_t basesize = size - (base - binary_filename);
+        s += size;
+        max -= size;
+        size = strlcpy(s, ".dSYM/Contents/Resources/DWARF/", max);
+        if (size == 0) goto fail;
+        s += size;
+        max -= size;
+        if (max <= basesize) goto fail;
+        memcpy(s, base, basesize);
+        s[basesize] = 0;
+    }
+
+    fd = open(binary_filename, O_RDONLY);
+    if (fd < 0) {
+        goto fail;
+    }
+    filesize = lseek(fd, 0, SEEK_END);
+    if (filesize < 0) {
+        int e = errno;
+        close(fd);
+        kprintf("lseek: %s\n", strerror(e));
+        goto fail;
+    }
+#if SIZEOF_OFF_T > SIZEOF_SIZE_T
+    if (filesize > (off_t)SIZE_MAX) {
+        close(fd);
+        kprintf("Too large file %s\n", binary_filename);
+        goto fail;
+    }
+#endif
+    lseek(fd, 0, SEEK_SET);
+    /* async-signal unsafe */
+    file = (char *)mmap(NULL, (size_t)filesize, PROT_READ, MAP_SHARED, fd, 0);
+    if (file == MAP_FAILED) {
+        int e = errno;
+        close(fd);
+        kprintf("mmap: %s\n", strerror(e));
+        goto fail;
+    }
+    close(fd);
+
+    fprintf(stderr,"offset: %d\n", offset);
+    if (offset == -1) {
+        Dl_info info;
+        void *s = dlsym(RTLD_MAIN_ONLY, "main");
+        if (!s) {
+            fprintf(stderr,"%s\n", dlerror());
+        }
+        fprintf(stderr,"addr: %p\n", s);
+        if (s && dladdr(s, &info)) {
+            dladdr_fbase = (uintptr_t)info.dli_fbase;
+            obj->base_addr = dladdr_fbase;
+            fprintf(stderr,"name: %s %p\n", binary_filename,info.dli_fbase);
+        }
+        exit(0);
+        offset = 0;
+    }
+
+    obj->mapped = file;
+    obj->mapped_size = (size_t)filesize;
+
+    header = (struct mach_header_64 *)file;
+    if (header->magic != MH_MAGIC_64) {
+        /* TODO: universal binaries */
+        kprintf("'%s' is not a 64-bit Mach-O file!\n",binary_filename);
+        close(fd);
+        goto fail;
+    }
+
+    p = file + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < (uint32_t)header->ncmds; i++) {
+        struct load_command *lcmd = (struct load_command *)p;
+        switch (lcmd->cmd) {
+          case LC_SEGMENT_64:
+            {
+                static const char *debug_section_names[] = {
+                    "__debug_abbrev",
+                    "__debug_info",
+                    "__debug_line",
+                    "__debug_ranges",
+                    "__debug_str"
+                };
+                struct segment_command_64 *scmd = (struct segment_command_64 *)lcmd;
+                kprintf("[%2d]: %x %s %p\n", i, scmd->cmd, scmd->segname, p);
+                struct segment_command_64 *cmd = (struct segment_command_64 *)p;
+                fprintf(stderr, "segment_command_64:%s \n", cmd->segname);
+                if (strcmp(cmd->segname, "__DWARF") == 0) {
+                    p += sizeof(struct segment_command_64);
+                    for (uint64_t i = 0; i < cmd->nsects; i++) {
+                        struct section_64 *sect = (struct section_64 *)p;
+                        fprintf(stderr, "section_64:%.16s \n", sect->sectname);
+                        p += sizeof(struct section_64);
+                        for (int j=0; j < DWARF_SECTION_COUNT; j++) {
+                            struct dwarf_section *s = obj_dwarf_section_at(obj, j);
+
+                            if (strcmp(sect->sectname, debug_section_names[j]) != 0)
+                                continue;
+
+                            s->ptr = file + sect->offset;
+                            s->size = sect->size;
+                            s->flags = sect->flags;
+                            if (s->flags & SHF_COMPRESSED) {
+                                goto fail;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            break;
+
+#if 0
+          case LC_SYMTAB:
+            {
+                struct symtab_command *c = (struct symtab_command *)lcmd;
+                struct nlist_64 *nl = (struct nlist *)(file + c->symoff);
+                char *strtab = file + c->stroff;
+                uint32_t j;
+                kprintf("[%2d]: %x/symtab %lx\n", i, c->cmd, p);
+                for (j = 0; j < c->nsyms; j++) {
+                    struct nlist_64 *e = &nl[j];
+                    if (!(e->n_type & N_STAB)) continue;
+                    /* if (e->n_type != N_FUN) continue; */
+                    kprintf("[%2d][%4d]: %02x/%x/%x: %s %lx\n", i, j,
+                            e->n_type,e->n_sect,e->n_desc,strtab+e->n_un.n_strx,e->n_value);
+                }
+            }
+#endif
+        }
+        p += lcmd->cmdsize;
+    }
+
+    if (obj->debug_info.ptr && obj->debug_abbrev.ptr) {
+        //int i = 0;
+        DebugInfoReader reader;
+        debug_info_reader_init(&reader, obj);
+        while (reader.p < reader.pend) {
+            //fprintf(stderr, "%d:%tx: CU[%d]\n", __LINE__, reader.p - reader.obj->debug_info.ptr, i++);
+            di_read_cu(&reader);
+            debug_info_read(&reader, num_traces, traces, lines, offset);
+        }
+    }
+
+finish:
+    return dladdr_fbase;
+fail:
+    return (uintptr_t)-1;
+}
+#endif
 
 #define HAVE_MAIN_EXE_PATH
 #if defined(__FreeBSD__)
@@ -1860,6 +2008,7 @@ rb_dump_backtrace_with_lines(int num_traces, void **traces)
 	    obj->base_addr = (uintptr_t)info.dli_fbase;
 	    path = info.dli_fname;
 	    obj->path = path;
+            fprintf(stderr,"%s: %lx->%lx (%lx) %s\n",obj->path,traces[i],info.dli_saddr,info.dli_fbase,info.dli_sname);
 	    lines[i].path = path;
 	    strlcpy(binary_filename, path, PATH_MAX);
 	    if (fill_lines(num_traces, traces, 1, &obj, lines, i) == (uintptr_t)-1)
@@ -1883,7 +2032,7 @@ next_line:
 	obj_info_t *o = obj;
         for (i=0; i < DWARF_SECTION_COUNT; i++) {
             struct dwarf_section *s = obj_dwarf_section_at(obj, i);
-            if (s->shdr && (s->shdr->sh_flags & SHF_COMPRESSED)) {
+            if (s->flags & SHF_COMPRESSED) {
                 free(s->ptr);
             }
         }
