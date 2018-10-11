@@ -1,6 +1,7 @@
 # frozen_string_literal: false
 require 'test/unit'
 require '-test-/time'
+require 'time'
 
 class TestTimeTZ < Test::Unit::TestCase
   has_right_tz = true
@@ -476,4 +477,106 @@ Europe/Lisbon  Mon Jan  1 00:36:31 1912 UTC = Sun Dec 31 23:59:59 1911 LMT isdst
 Europe/Lisbon  Mon Jan  1 00:36:44 1912 UT = Sun Dec 31 23:59:59 1911 LMT isdst=0 gmtoff=-2205
 Europe/Lisbon  Sun Dec 31 23:59:59 1911 UT = Sun Dec 31 23:23:14 1911 LMT isdst=0 gmtoff=-2205
 End
+
+  class TZ
+    attr_reader :name, :abbr, :offset
+
+    def initialize(name, abbr, offset)
+      @name = name
+      @abbr = abbr
+      @offset = offset
+    end
+
+    def add_offset(t, ofs)
+      Time::TM.new(*Time.send(:apply_offset, *t.to_a[0, 6].reverse, ofs))
+    rescue => e
+      raise e.class, sprintf("%s: %p %+d", e.message, t, ofs)
+    end
+
+    def local_to_utc(t)
+      add_offset(t, +@offset)
+    end
+
+    def utc_to_local(t)
+      add_offset(t, -@offset)
+    end
+
+    def abbr(t)
+      @abbr
+    end
+  end
+end
+
+module TestTimeTZ::WithTZ
+  def tz
+    @tz ||= TestTimeTZ::TZ.new(tzname, abbr, utc_offset)
+  end
+
+  def test_new
+    t = Time.new(2018, 9, 1, 12, 0, 0, tz)
+    assert_equal([2018, 9, 1, 12, 0, 0, tz], [t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.zone])
+    h, m = (-utc_offset / 60).divmod(60)
+    assert_equal(Time.utc(2018, 9, 1, 12+h, m, 0).to_i, t.to_i)
+  end
+
+  def test_getlocal
+    t = Time.utc(2018, 9, 1, 12, 0, 0).getlocal(tz)
+    h, m = (utc_offset / 60).divmod(60)
+    assert_equal([2018, 9, 1, 12+h, m, 0, tz], [t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.zone])
+    assert_equal(Time.utc(2018, 9, 1, 12, 0, 0), t)
+  end
+
+  def test_strftime
+    t = Time.new(2018, 9, 1, 12, 0, 0, tz)
+    h, m = (utc_offset.abs / 60).divmod(60)
+    h = -h if utc_offset < 0
+    assert_equal("%+.2d%.2d %s" % [h, m, abbr], t.strftime("%z %Z"))
+  end
+
+  def test_plus
+    t = Time.new(2018, 9, 1, 12, 0, 0, tz) + 4000
+    assert_equal([2018, 9, 1, 13, 6, 40, tz], [t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.zone])
+    m, s = (4000-utc_offset).divmod(60)
+    h, m = m.divmod(60)
+    assert_equal(Time.utc(2018, 9, 1, 12+h, m, s), t)
+  end
+
+  def test_marshal
+    t = Time.new(2018, 9, 1, 12, 0, 0, tz)
+    t2 = Marshal.load(Marshal.dump(t))
+    assert_equal(t, t2)
+    assert_equal(t.utc_offset, t2.utc_offset)
+  end
+end
+
+class TestTimeTZ::JST < Test::Unit::TestCase
+  include TestTimeTZ::WithTZ
+
+  def tzname
+    "Asia/Tokyo"
+  end
+
+  def abbr
+    "JST"
+  end
+
+  def utc_offset
+    +9*3600
+  end
+end
+
+class TestTimeTZ::EDT < Test::Unit::TestCase
+  include TestTimeTZ::WithTZ
+
+  def tzname
+    "America/New_York"
+  end
+
+  def abbr
+    "EDT"
+  end
+
+  def utc_offset
+    -4*3600
+  end
 end

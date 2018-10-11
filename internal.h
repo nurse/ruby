@@ -77,6 +77,9 @@ extern "C" {
 # define __has_extension __has_feature
 #endif
 
+/* Prevent compiler from reordering access */
+#define ACCESS_ONCE(type,x) (*((volatile type *)&(x)))
+
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 # define STATIC_ASSERT(name, expr) _Static_assert(expr, #name ": " #expr)
 #elif GCC_VERSION_SINCE(4, 6, 0) || __has_extension(c_static_assert)
@@ -622,8 +625,10 @@ struct RBignum {
 #define BIGNUM_NEGATE(b) (RBASIC(b)->flags ^= BIGNUM_SIGN_BIT)
 
 #define BIGNUM_EMBED_FLAG ((VALUE)FL_USER2)
-#define BIGNUM_EMBED_LEN_MASK ((VALUE)(FL_USER5|FL_USER4|FL_USER3))
-#define BIGNUM_EMBED_LEN_SHIFT (FL_USHIFT+BIGNUM_EMBED_LEN_NUMBITS)
+#define BIGNUM_EMBED_LEN_MASK \
+    (~(~(VALUE)0U << BIGNUM_EMBED_LEN_NUMBITS) << BIGNUM_EMBED_LEN_SHIFT)
+#define BIGNUM_EMBED_LEN_SHIFT \
+    (FL_USHIFT+3) /* bit offset of BIGNUM_EMBED_LEN_MASK */
 #define BIGNUM_LEN(b) \
     ((RBASIC(b)->flags & BIGNUM_EMBED_FLAG) ? \
      (size_t)((RBASIC(b)->flags >> BIGNUM_EMBED_LEN_SHIFT) & \
@@ -663,12 +668,9 @@ struct RComplex {
 
 #define RCOMPLEX(obj) (R_CAST(RComplex)(obj))
 
-#ifdef RCOMPLEX_SET_REAL        /* shortcut macro for internal only */
-#undef RCOMPLEX_SET_REAL
-#undef RCOMPLEX_SET_IMAG
+/* shortcut macro for internal only */
 #define RCOMPLEX_SET_REAL(cmp, r) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->real,(r))
 #define RCOMPLEX_SET_IMAG(cmp, i) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->imag,(i))
-#endif
 
 struct RHash {
     struct RBasic basic;
@@ -1070,8 +1072,6 @@ VALUE rb_gvar_get(struct rb_global_entry *);
 VALUE rb_gvar_set(struct rb_global_entry *, VALUE);
 VALUE rb_gvar_defined(struct rb_global_entry *);
 
-struct vtm; /* defined by timev.h */
-
 /* array.c */
 VALUE rb_ary_last(int, const VALUE *, VALUE);
 void rb_ary_set_len(VALUE, long);
@@ -1084,6 +1084,7 @@ size_t rb_ary_memsize(VALUE);
 VALUE rb_to_array_type(VALUE obj);
 VALUE rb_check_to_array(VALUE ary);
 VALUE rb_ary_tmp_new_from_values(VALUE, long, const VALUE *);
+VALUE rb_ary_behead(VALUE, long);
 #if defined(__GNUC__) && defined(HAVE_VA_ARGS_MACRO)
 #define rb_ary_new_from_args(n, ...) \
     __extension__ ({ \
@@ -1358,6 +1359,7 @@ VALUE rb_hash_values(VALUE hash);
 VALUE rb_hash_rehash(VALUE hash);
 int rb_hash_add_new_element(VALUE hash, VALUE key, VALUE val);
 #define HASH_PROC_DEFAULT FL_USER2
+VALUE rb_hash_set_pair(VALUE hash, VALUE pair);
 
 /* inits.c */
 void rb_call_inits(void);
@@ -1725,6 +1727,7 @@ rb_pid_t rb_fork_ruby(int *status);
 void rb_last_status_clear(void);
 
 /* rational.c */
+VALUE rb_rational_canonicalize(VALUE x);
 VALUE rb_rational_uminus(VALUE self);
 VALUE rb_rational_plus(VALUE self, VALUE other);
 VALUE rb_lcm(VALUE x, VALUE y);
@@ -1748,14 +1751,6 @@ VALUE rb_reg_new_ary(VALUE ary, int options);
 /* signal.c */
 extern int ruby_enable_coredump;
 int rb_get_next_signal(void);
-
-/* strftime.c */
-#ifdef RUBY_ENCODING_H
-VALUE rb_strftime_timespec(const char *format, size_t format_len, rb_encoding *enc,
-			   const struct vtm *vtm, struct timespec *ts, int gmt);
-VALUE rb_strftime(const char *format, size_t format_len, rb_encoding *enc,
-		  const struct vtm *vtm, VALUE timev, int gmt);
-#endif
 
 /* string.c */
 VALUE rb_fstring(VALUE);
@@ -1870,9 +1865,6 @@ void rb_mutex_allow_trap(VALUE self, int val);
 VALUE rb_uninterruptible(VALUE (*b_proc)(ANYARGS), VALUE data);
 VALUE rb_mutex_owned_p(VALUE self);
 
-/* thread_pthread.c, thread_win32.c */
-int rb_divert_reserved_fd(int fd);
-
 /* transcode.c */
 extern VALUE rb_cEncodingConverter;
 #ifdef RUBY_ENCODING_H
@@ -1902,6 +1894,9 @@ VALUE rb_ivar_lookup(VALUE obj, ID id, VALUE undef);
 void rb_autoload_str(VALUE mod, ID id, VALUE file);
 void rb_deprecate_constant(VALUE mod, const char *name);
 NORETURN(VALUE rb_mod_const_missing(VALUE,VALUE));
+rb_gvar_getter_t *rb_gvar_getter_function_of(const struct rb_global_entry *);
+rb_gvar_setter_t *rb_gvar_setter_function_of(const struct rb_global_entry *);
+bool rb_gvar_is_traced(const struct rb_global_entry *);
 
 /* vm_insnhelper.h */
 rb_serial_t rb_next_class_serial(void);
@@ -1913,16 +1908,17 @@ void Init_BareVM(void);
 void Init_vm_objects(void);
 PUREFUNC(VALUE rb_vm_top_self(void));
 void rb_thread_recycle_stack_release(VALUE *);
+VALUE *rb_thread_recycle_stack(size_t);
 void rb_vm_change_state(void);
 void rb_vm_inc_const_missing_count(void);
 const void **rb_vm_get_insns_address_table(void);
 VALUE rb_source_location(int *pline);
 const char *rb_source_location_cstr(int *pline);
-void rb_vm_pop_cfunc_frame(void);
+MJIT_STATIC void rb_vm_pop_cfunc_frame(void);
 int rb_vm_add_root_module(ID id, VALUE module);
 void rb_vm_check_redefinition_by_prepend(VALUE klass);
 VALUE rb_yield_refine_block(VALUE refinement, VALUE refinements);
-VALUE ruby_vm_special_exception_copy(VALUE);
+MJIT_STATIC VALUE ruby_vm_special_exception_copy(VALUE);
 PUREFUNC(st_table *rb_vm_fstring_table(void));
 
 
@@ -1947,6 +1943,7 @@ VALUE rb_lambda_call(VALUE obj, ID mid, int argc, const VALUE *argv,
 /* vm_insnhelper.c */
 VALUE rb_equal_opt(VALUE obj1, VALUE obj2);
 VALUE rb_eql_opt(VALUE obj1, VALUE obj2);
+void Init_vm_stack_canary(void);
 
 /* vm_method.c */
 void Init_eval_method(void);
@@ -2100,6 +2097,9 @@ VALUE rb_imemo_new_debug(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VAL
 VALUE rb_imemo_new(enum imemo_type type, VALUE v1, VALUE v2, VALUE v3, VALUE v0);
 #endif
 
+/* random.c */
+int ruby_fill_random_bytes(void *, size_t, int);
+
 RUBY_SYMBOL_EXPORT_END
 
 #define RUBY_DTRACE_CREATE_HOOK(name, arg) \
@@ -2144,14 +2144,14 @@ rb_obj_builtin_type(VALUE obj)
 /*
  * For declaring bitfields out of non-unsigned int types:
  *   struct date {
- *      BITFIELD(enum months) month:4;
+ *      BITFIELD(enum months, month, 4);
  *      ...
  *   };
  */
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
-# define BITFIELD(type) type
+# define BITFIELD(type, name, size) type name : size
 #else
-# define BITFIELD(type) unsigned int
+# define BITFIELD(type, name, size) unsigned int name : size
 #endif
 
 #if defined(_MSC_VER)

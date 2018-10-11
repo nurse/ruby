@@ -322,6 +322,15 @@ class TestRange < Test::Unit::TestCase
     assert_equal(["a", "b", "c"], a)
   end
 
+  def test_percent_step
+    aseq = (1..10) % 2
+    assert_equal(Enumerator::ArithmeticSequence, aseq.class)
+    assert_equal(1, aseq.begin)
+    assert_equal(10, aseq.end)
+    assert_equal(2, aseq.step)
+    assert_equal([1, 3, 5, 7, 9], aseq.to_a)
+  end
+
   def test_step_ruby_core_35753
     assert_equal(6, (1...6.3).step.to_a.size)
     assert_equal(5, (1.1...6).step.to_a.size)
@@ -525,6 +534,52 @@ class TestRange < Test::Unit::TestCase
     assert_not_operator(5..., :cover?, 0)
     assert_not_operator(5..., :cover?, "a")
     assert_operator(5.., :cover?, 10)
+
+    assert_operator(2..5, :cover?, 2..5)
+    assert_operator(2...6, :cover?, 2...6)
+    assert_operator(2...6, :cover?, 2..5)
+    assert_operator(2..5, :cover?, 2...6)
+    assert_operator(2..5, :cover?, 2..4)
+    assert_operator(2..5, :cover?, 2...4)
+    assert_operator(2..5, :cover?, 2...5)
+    assert_operator(2..5, :cover?, 3..5)
+    assert_operator(2..5, :cover?, 3..4)
+    assert_operator(2..5, :cover?, 3...6)
+    assert_operator(2...6, :cover?, 2...5)
+    assert_operator(2...6, :cover?, 2..5)
+    assert_operator(2..6, :cover?, 2...6)
+    assert_operator(2.., :cover?, 2..)
+    assert_operator(2.., :cover?, 3..)
+    assert_operator(1.., :cover?, 1..10)
+    assert_operator(2.0..5.0, :cover?, 2..3)
+    assert_operator(2..5, :cover?, 2.0..3.0)
+    assert_operator(2..5, :cover?, 2.0...3.0)
+    assert_operator(2..5, :cover?, 2.0...5.0)
+    assert_operator(2.0..5.0, :cover?, 2.0...3.0)
+    assert_operator(2.0..5.0, :cover?, 2.0...5.0)
+    assert_operator('aa'..'zz', :cover?, 'aa'...'bb')
+
+    assert_not_operator(2..5, :cover?, 1..5)
+    assert_not_operator(2...6, :cover?, 1..5)
+    assert_not_operator(2..5, :cover?, 1...6)
+    assert_not_operator(1..3, :cover?, 1...6)
+    assert_not_operator(2..5, :cover?, 2..6)
+    assert_not_operator(2...6, :cover?, 2..6)
+    assert_not_operator(2...6, :cover?, 2...7)
+    assert_not_operator(2..3, :cover?, 1..4)
+    assert_not_operator(1..2, :cover?, 1.0..3.0)
+    assert_not_operator(1.0..2.9, :cover?, 1.0..3.0)
+    assert_not_operator(1..2, :cover?, 4..3)
+    assert_not_operator(2..1, :cover?, 1..2)
+    assert_not_operator(1...2, :cover?, 1...3)
+    assert_not_operator(2.., :cover?, 1..)
+    assert_not_operator(2.., :cover?, 1..10)
+    assert_not_operator(1..10, :cover?, 1..)
+    assert_not_operator(1..5, :cover?, 3..2)
+    assert_not_operator(1..10, :cover?, 3...2)
+    assert_not_operator(1..10, :cover?, 3...3)
+    assert_not_operator('aa'..'zz', :cover?, 'aa'...'zzz')
+    assert_not_operator(1..10, :cover?, 1...10.1)
   end
 
   def test_beg_len

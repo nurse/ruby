@@ -28,6 +28,13 @@ extern "C" {
 
 #include "defines.h"
 
+/* For MinGW, we need __declspec(dllimport) for RUBY_EXTERN on MJIT.
+   mswin's RUBY_EXTERN already has that. See also: win32/Makefile.sub */
+#if defined(MJIT_HEADER) && defined(_WIN32) && defined(__GNUC__)
+# undef RUBY_EXTERN
+# define RUBY_EXTERN extern __declspec(dllimport)
+#endif
+
 #if defined(__cplusplus)
 /* __builtin_choose_expr and __builtin_types_compatible aren't available
  * on C++.  See https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html */
@@ -124,10 +131,12 @@ typedef char ruby_check_sizeof_voidp[SIZEOF_VOIDP == sizeof(void*) ? 1 : -1];
 #define PRI_SHORT_PREFIX "h"
 #endif
 
+#ifndef PRI_64_PREFIX
 #if SIZEOF_LONG == 8
 #define PRI_64_PREFIX PRI_LONG_PREFIX
 #elif SIZEOF_LONG_LONG == 8
 #define PRI_64_PREFIX PRI_LL_PREFIX
+#endif
 #endif
 
 #define RUBY_PRI_VALUE_MARK "\v"
@@ -1074,9 +1083,6 @@ struct RFile {
     struct rb_io_t *fptr;
 };
 
-#define RCOMPLEX_SET_REAL(cmp, r) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->real,(r))
-#define RCOMPLEX_SET_IMAG(cmp, i) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->imag,(i))
-
 struct RData {
     struct RBasic basic;
     void (*dmark)(void*);
@@ -1771,7 +1777,7 @@ VALUE rb_check_symbol(volatile VALUE *namep);
     do RUBY_CONST_ID_CACHE((var) =, (str)) while (0)
 #define CONST_ID_CACHE(result, str) RUBY_CONST_ID_CACHE(result, str)
 #define CONST_ID(var, str) RUBY_CONST_ID(var, str)
-#ifdef __GNUC__
+#ifdef HAVE_BUILTIN___BUILTIN_CONSTANT_P
 /* __builtin_constant_p and statement expression is available
  * since gcc-2.7.2.3 at least. */
 #define rb_intern(str) \

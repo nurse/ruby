@@ -75,7 +75,7 @@ describe 'BasicSocket#recvmsg_nonblock' do
 
             platform_is_not :windows do
               it 'stores the flags at index 2' do
-                @array[2].should be_an_instance_of(Fixnum)
+                @array[2].should be_kind_of(Integer)
               end
             end
 
@@ -144,7 +144,7 @@ describe 'BasicSocket#recvmsg_nonblock' do
             @client.write('hello')
 
             @socket, _ = @server.accept
-            platform_is(:darwin, :freebsd) { IO.select([@socket]) }
+            IO.select([@socket])
           end
 
           after do
@@ -169,7 +169,7 @@ describe 'BasicSocket#recvmsg_nonblock' do
             end
 
             it 'stores the flags at index 2' do
-              @array[2].should be_an_instance_of(Fixnum)
+              @array[2].should be_kind_of(Integer)
             end
 
             describe 'the returned Addrinfo' do

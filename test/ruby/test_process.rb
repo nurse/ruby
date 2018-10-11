@@ -1009,6 +1009,15 @@ class TestProcess < Test::Unit::TestCase
     }
   end
 
+  def test_close_others_default_false
+    IO.pipe do |r,w|
+      w.close_on_exec = false
+      src = "IO.new(#{w.fileno}).puts(:hi)"
+      assert_equal true, system(*%W(#{RUBY} --disable=gems -e #{src}))
+      assert_equal "hi\n", r.gets
+    end
+  end unless windows? # passing non-stdio fds is not supported on Windows
+
   def test_execopts_redirect_self
     begin
       with_pipe {|r, w|
@@ -1767,7 +1776,7 @@ class TestProcess < Test::Unit::TestCase
           puts Dir.entries("/proc/self/task") - %W[. ..]
         end
         bug4920 = '[ruby-dev:43873]'
-        assert_equal(2, data.size, bug4920)
+        assert_include(1..2, data.size, bug4920)
         assert_not_include(data.map(&:to_i), pid)
       end
     else # darwin

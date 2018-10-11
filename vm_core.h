@@ -164,11 +164,7 @@ void *rb_register_sigaltstack(void);
 #endif /* OPT_STACK_CACHING */
 #endif /* OPT_CALL_THREADED_CODE */
 
-#if OPT_DIRECT_THREADED_CODE || OPT_CALL_THREADED_CODE
-void rb_addr2insn_init(void);
-#else
-static inline void rb_addr2insn_init(void) { }
-#endif
+void rb_vm_encoded_insn_data_table_init(void);
 typedef unsigned long rb_num_t;
 typedef   signed long rb_snum_t;
 
@@ -535,6 +531,8 @@ enum ruby_basic_operators {
     BOP_MAX,
     BOP_MIN,
     BOP_CALL,
+    BOP_AND,
+    BOP_OR,
 
     BOP_LAST_
 };
@@ -564,10 +562,12 @@ typedef struct rb_vm_struct {
     VALUE self;
 
     rb_global_vm_lock_t gvl;
-    rb_nativethread_lock_t    thread_destruct_lock;
 
     struct rb_thread_struct *main_thread;
-    struct rb_thread_struct *running_thread;
+
+    /* persists across uncontended GVL release/acquire for time slice */
+    const struct rb_thread_struct *running_thread;
+
 #ifdef USE_SIGALTSTACK
     void *main_altstack;
 #endif
@@ -877,9 +877,14 @@ typedef struct rb_thread_struct {
 #ifdef NON_SCALAR_THREAD_ID
     rb_thread_id_string_t thread_id_string;
 #endif
-    enum rb_thread_status status;
-    int to_kill;
-    int priority;
+    BITFIELD(enum rb_thread_status, status, 2);
+    /* bit flags */
+    unsigned int to_kill : 1;
+    unsigned int abort_on_exception: 1;
+    unsigned int report_on_exception: 1;
+    unsigned int pending_interrupt_queue_checked: 1;
+    int8_t priority; /* -3 .. 3 (RUBY_THREAD_PRIORITY_{MIN,MAX}) */
+    uint32_t running_time_us; /* 12500..800000 */
 
     native_thread_data_t native_thread_data;
     void *blocking_region_buffer;
@@ -917,12 +922,7 @@ typedef struct rb_thread_struct {
 
     /* misc */
     VALUE name;
-    uint32_t running_time_us; /* 12500..800000 */
 
-    /* bit flags */
-    unsigned int abort_on_exception: 1;
-    unsigned int report_on_exception: 1;
-    unsigned int pending_interrupt_queue_checked: 1;
 } rb_thread_t;
 
 typedef enum {
@@ -1578,12 +1578,12 @@ void rb_vm_inc_const_missing_count(void);
 void rb_vm_gvl_destroy(rb_vm_t *vm);
 VALUE rb_vm_call(rb_execution_context_t *ec, VALUE recv, VALUE id, int argc,
 		 const VALUE *argv, const rb_callable_method_entry_t *me);
-void rb_vm_pop_frame(rb_execution_context_t *ec);
+MJIT_STATIC void rb_vm_pop_frame(rb_execution_context_t *ec);
 
 void rb_thread_start_timer_thread(void);
 void rb_thread_stop_timer_thread(void);
 void rb_thread_reset_timer_thread(void);
-void rb_thread_wakeup_timer_thread(void);
+void rb_thread_wakeup_timer_thread(int);
 
 static inline void
 rb_vm_living_threads_init(rb_vm_t *vm)
@@ -1618,7 +1618,7 @@ void rb_vm_stack_to_heap(rb_execution_context_t *ec);
 void ruby_thread_init_stack(rb_thread_t *th);
 int rb_vm_control_frame_id_and_class(const rb_control_frame_t *cfp, ID *idp, ID *called_idp, VALUE *klassp);
 void rb_vm_rewind_cfp(rb_execution_context_t *ec, rb_control_frame_t *cfp);
-VALUE rb_vm_bh_to_procval(const rb_execution_context_t *ec, VALUE block_handler);
+MJIT_STATIC VALUE rb_vm_bh_to_procval(const rb_execution_context_t *ec, VALUE block_handler);
 
 void rb_vm_register_special_exception_str(enum ruby_special_exceptions sp, VALUE exception_class, VALUE mesg);
 
@@ -1629,7 +1629,7 @@ void rb_gc_mark_machine_stack(const rb_execution_context_t *ec);
 
 void rb_vm_rewrite_cref(rb_cref_t *node, VALUE old_klass, VALUE new_klass, rb_cref_t **new_cref_ptr);
 
-const rb_callable_method_entry_t *rb_vm_frame_method_entry(const rb_control_frame_t *cfp);
+MJIT_STATIC const rb_callable_method_entry_t *rb_vm_frame_method_entry(const rb_control_frame_t *cfp);
 
 #define sysstack_error GET_VM()->special_exceptions[ruby_error_sysstack]
 
@@ -1734,11 +1734,11 @@ enum {
 
 VALUE rb_exc_set_backtrace(VALUE exc, VALUE bt);
 int rb_signal_buff_size(void);
-void rb_signal_exec(rb_thread_t *th, int sig);
+int rb_signal_exec(rb_thread_t *th, int sig);
 void rb_threadptr_check_signal(rb_thread_t *mth);
 void rb_threadptr_signal_raise(rb_thread_t *th, int sig);
 void rb_threadptr_signal_exit(rb_thread_t *th);
-void rb_threadptr_execute_interrupts(rb_thread_t *, int);
+int rb_threadptr_execute_interrupts(rb_thread_t *, int);
 void rb_threadptr_interrupt(rb_thread_t *th);
 void rb_threadptr_unlock_all_locking_mutexes(rb_thread_t *th);
 void rb_threadptr_pending_interrupt_clear(rb_thread_t *th);

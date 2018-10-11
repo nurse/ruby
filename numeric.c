@@ -2654,9 +2654,11 @@ num_step_size(VALUE from, VALUE args, VALUE eobj)
 /*
  *  call-seq:
  *     num.step(by: step, to: limit) {|i| block }   ->  self
- *     num.step(by: step, to: limit)		    ->  an_enumerator
+ *     num.step(by: step, to: limit)                ->  an_enumerator
+ *     num.step(by: step, to: limit)                ->  an_arithmetic_sequence
  *     num.step(limit=nil, step=1) {|i| block }     ->  self
  *     num.step(limit=nil, step=1)                  ->  an_enumerator
+ *     num.step(limit=nil, step=1)                  ->  an_arithmetic_sequence
  *
  *  Invokes the given block with the sequence of numbers starting at +num+,
  *  incremented by +step+ (defaulted to +1+) on each call.
@@ -2685,6 +2687,8 @@ num_step_size(VALUE from, VALUE args, VALUE eobj)
  *  and increments itself using the <code>+</code> operator.
  *
  *  If no block is given, an Enumerator is returned instead.
+ *  Especially, the enumerator is an Enumerator::ArithmeticSequence
+ *  if both +limit+ and +step+ are kind of Numeric or <code>nil</code>.
  *
  *  For example:
  *
@@ -4011,7 +4015,8 @@ fix_pow(VALUE x, VALUE y)
 	}
 	if (b < 0) {
 	    if (a == 0) rb_num_zerodiv();
-	    return rb_rational_raw(INT2FIX(1), rb_int_pow(x, LONG2NUM(-b)));
+            y = rb_int_pow(x, LONG2NUM(-b));
+            goto inverted;
 	}
 
 	if (b == 0) return INT2FIX(1);
@@ -4030,7 +4035,13 @@ fix_pow(VALUE x, VALUE y)
 	}
 	if (BIGNUM_NEGATIVE_P(y)) {
 	    if (a == 0) rb_num_zerodiv();
-	    return rb_rational_raw(INT2FIX(1), rb_int_pow(x, rb_big_uminus(y)));
+            y = rb_int_pow(x, rb_big_uminus(y));
+          inverted:
+            if (RB_FLOAT_TYPE_P(y)) {
+                double d = pow((double)a, RFLOAT_VALUE(y));
+                return DBL2NUM(1.0 / d);
+            }
+            return rb_rational_raw(INT2FIX(1), y);
 	}
 	if (a == 0) return INT2FIX(0);
 	x = rb_int2big(FIX2LONG(x));

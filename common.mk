@@ -42,7 +42,7 @@ GEM_PATH =
 GEM_VENDOR =
 
 BENCHMARK_DRIVER_GIT_URL = https://github.com/benchmark-driver/benchmark-driver
-BENCHMARK_DRIVER_GIT_REF = v0.14.6
+BENCHMARK_DRIVER_GIT_REF = v0.14.11
 SIMPLECOV_GIT_URL = https://github.com/colszowka/simplecov.git
 SIMPLECOV_GIT_REF = v0.15.0
 SIMPLECOV_HTML_GIT_URL = https://github.com/colszowka/simplecov-html.git
@@ -61,6 +61,7 @@ ENC_TRANS_D   = $(TIMESTAMPDIR)/.enc-trans.time
 RDOCOUT       = $(EXTOUT)/rdoc
 HTMLOUT       = $(EXTOUT)/html
 CAPIOUT       = doc/capi
+INSTALL_DOC_OPTS = --rdoc-output="$(RDOCOUT)" --html-output="$(HTMLOUT)"
 
 INITOBJS      = dmyext.$(OBJEXT) dmyenc.$(OBJEXT)
 NORMALMAINOBJ = main.$(OBJEXT)
@@ -212,7 +213,8 @@ mjit_config.h: Makefile
 
 # Other `-Dxxx`s preceding `-DMJIT_HEADER` will be removed in transform_mjit_header.rb.
 # So `-DMJIT_HEADER` should be passed first when rb_mjit_header.h is generated.
-$(TIMESTAMPDIR)/$(MJIT_HEADER:.h=)$(MJIT_HEADER_SUFFIX).time: probes.h vm.$(OBJEXT)
+$(TIMESTAMPDIR)/$(MJIT_HEADER:.h=)$(MJIT_HEADER_SUFFIX).time: probes.h vm.$(OBJEXT) \
+		$(TIMESTAMPDIR)/$(arch)/.time
 	$(ECHO) building $(@F:.time=.h)
 	$(Q) $(CPP) -DMJIT_HEADER $(MJIT_HEADER_FLAGS) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(srcdir)/vm.c $(CPPOUTFLAG)$(@F:.time=.h).new
 	$(Q) $(IFCHANGE) "--timestamp=$@" $(@F:.time=.h) $(@F:.time=.h).new
@@ -351,7 +353,7 @@ $(ruby_pc): $(srcdir)/template/ruby.pc.in config.status
 install-all: docs pre-install-all do-install-all post-install-all
 pre-install-all:: all pre-install-local pre-install-ext pre-install-doc
 do-install-all: pre-install-all
-	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=all --rdoc-output="$(RDOCOUT)"
+	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=all $(INSTALL_DOC_OPTS)
 post-install-all:: post-install-local post-install-ext post-install-doc
 	@$(NULLCMD)
 
@@ -433,7 +435,7 @@ what-where-all: no-install-all
 no-install-all: pre-no-install-all dont-install-all post-no-install-all
 pre-no-install-all:: pre-no-install-local pre-no-install-ext pre-no-install-doc
 dont-install-all: $(PROGRAM)
-	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=all --rdoc-output="$(RDOCOUT)"
+	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=all $(INSTALL_DOC_OPTS)
 post-no-install-all:: post-no-install-local post-no-install-ext post-no-install-doc
 	@$(NULLCMD)
 
@@ -520,7 +522,7 @@ post-no-install-man::
 install-doc: rdoc pre-install-doc do-install-doc post-install-doc
 pre-install-doc:: install-prereq
 do-install-doc: $(PROGRAM) pre-install-doc
-	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=rdoc --rdoc-output="$(RDOCOUT)"
+	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=rdoc $(INSTALL_DOC_OPTS)
 post-install-doc::
 	@$(NULLCMD)
 
@@ -559,7 +561,7 @@ what-where-doc: no-install-doc
 no-install-doc: pre-no-install-doc dont-install-doc post-no-install-doc
 pre-no-install-doc:: install-prereq
 dont-install-doc:: $(PREP)
-	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=rdoc --rdoc-output="$(RDOCOUT)"
+	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=rdoc $(INSTALL_DOC_OPTS)
 post-no-install-doc::
 	@$(NULLCMD)
 
@@ -1393,8 +1395,8 @@ help: PHONY
 	"  runruby:             runs test.rb by ruby you just built" \
 	"  gdb:                 runs test.rb by miniruby under gdb" \
 	"  gdb-ruby:            runs test.rb by ruby under gdb" \
-	"  check:               equals make test test-all" \
-	"  exam:                equals make check test-spec" \
+	"  check:               equals make test test-all test-spec" \
+	"  exam:                equals make check" \
 	"  test:                ruby core tests" \
 	"  test-all:            all ruby tests [TESTOPTS=-j4 TESTS=<test files>]" \
 	"  test-spec:           run the Ruby spec suite" \
@@ -2232,6 +2234,7 @@ mjit_compile.$(OBJEXT): $(CCAN_DIR)/container_of/container_of.h
 mjit_compile.$(OBJEXT): $(CCAN_DIR)/list/list.h
 mjit_compile.$(OBJEXT): $(CCAN_DIR)/str/str.h
 mjit_compile.$(OBJEXT): $(hdrdir)/ruby/ruby.h
+mjit_compile.$(OBJEXT): $(hdrdir)/ruby/version.h
 mjit_compile.$(OBJEXT): $(top_srcdir)/include/ruby.h
 mjit_compile.$(OBJEXT): {$(VPATH)}config.h
 mjit_compile.$(OBJEXT): {$(VPATH)}defines.h
@@ -2241,6 +2244,7 @@ mjit_compile.$(OBJEXT): {$(VPATH)}insns.inc
 mjit_compile.$(OBJEXT): {$(VPATH)}insns_info.inc
 mjit_compile.$(OBJEXT): {$(VPATH)}intern.h
 mjit_compile.$(OBJEXT): {$(VPATH)}internal.h
+mjit_compile.$(OBJEXT): {$(VPATH)}iseq.h
 mjit_compile.$(OBJEXT): {$(VPATH)}method.h
 mjit_compile.$(OBJEXT): {$(VPATH)}missing.h
 mjit_compile.$(OBJEXT): {$(VPATH)}mjit.h
@@ -2846,6 +2850,7 @@ thread.$(OBJEXT): {$(VPATH)}defines.h
 thread.$(OBJEXT): {$(VPATH)}encoding.h
 thread.$(OBJEXT): {$(VPATH)}eval_intern.h
 thread.$(OBJEXT): {$(VPATH)}gc.h
+thread.$(OBJEXT): {$(VPATH)}hrtime.h
 thread.$(OBJEXT): {$(VPATH)}id.h
 thread.$(OBJEXT): {$(VPATH)}intern.h
 thread.$(OBJEXT): {$(VPATH)}internal.h

@@ -39,4 +39,15 @@ typedef unsigned LONG_LONG unsigned_time_t;
 # error cannot find integer type which size is same as time_t.
 #endif
 
+/* strftime.c */
+#ifdef RUBY_ENCODING_H
+VALUE rb_strftime_timespec(const char *format, size_t format_len, rb_encoding *enc,
+                           VALUE time, const struct vtm *vtm, struct timespec *ts, int gmt);
+VALUE rb_strftime(const char *format, size_t format_len, rb_encoding *enc,
+                  VALUE time, const struct vtm *vtm, VALUE timev, int gmt);
+#endif
+
+/* time.c */
+VALUE rb_time_zone_abbreviation(VALUE zone, VALUE time);
+
 #endif

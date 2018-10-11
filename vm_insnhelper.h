@@ -112,7 +112,6 @@ enum vm_regan_acttype {
 #define DEC_SP(x)  (VM_REG_SP -= (COLLECT_USAGE_REGISTER_HELPER(SP, SET, (x))))
 #define SET_SV(x)  (*GET_SP() = (x))
   /* set current stack value as x */
-#define ADJ_SP(x)  INC_SP(x)
 
 /* instruction sequence C struct */
 #define GET_ISEQ() (GET_CFP()->iseq)
@@ -178,27 +177,35 @@ enum vm_regan_acttype {
  * because inline method cache does not care about receiver.
  */
 
-#ifndef OPT_CALL_FASTPATH
-#define OPT_CALL_FASTPATH 1
-#endif
-
-#if OPT_CALL_FASTPATH
-#define CI_SET_FASTPATH(cc, func, enabled) do { \
+#define CC_SET_FASTPATH(cc, func, enabled) do { \
     if (LIKELY(enabled)) ((cc)->call = (func)); \
 } while (0)
-#else
-#define CI_SET_FASTPATH(ci, func, enabled) /* do nothing */
-#endif
 
 #define GET_BLOCK_HANDLER() (GET_LEP()[VM_ENV_DATA_INDEX_SPECVAL])
-
-#define WIDTH_OF_opt_send_without_block \
-    ((rb_snum_t)attr_width_opt_send_without_block(0, 0))
 
 /**********************************************************/
 /* deal with control flow 3: exception                    */
 /**********************************************************/
 
+
+/**********************************************************/
+/* deal with stack canary                                 */
+/**********************************************************/
+
+#if VM_CHECK_MODE > 0
+#define SETUP_CANARY() \
+    if (leaf) { \
+        canary = GET_SP(); \
+        SET_SV(vm_stack_canary); \
+    }
+#define CHECK_CANARY() \
+    if (leaf && (*canary != vm_stack_canary)) { \
+        vm_canary_is_found_dead(INSN_ATTR(bin), *canary); \
+    }
+#else
+#define SETUP_CANARY()          /* void */
+#define CHECK_CANARY()          /* void */
+#endif
 
 /**********************************************************/
 /* others                                                 */
@@ -216,6 +223,16 @@ enum vm_regan_acttype {
 
 #ifndef USE_IC_FOR_SPECIALIZED_METHOD
 #define USE_IC_FOR_SPECIALIZED_METHOD 1
+#endif
+
+#ifndef MJIT_HEADER
+#define CALL_SIMPLE_METHOD() do { \
+    rb_snum_t x = leaf ? INSN_ATTR(width) : 0; \
+    rb_snum_t y = attr_width_opt_send_without_block(0, 0); \
+    rb_snum_t z = x - y; \
+    ADD_PC(z); \
+    DISPATCH_ORIGINAL_INSN(opt_send_without_block); \
+} while (0)
 #endif
 
 #define NEXT_CLASS_SERIAL() (++ruby_vm_class_serial)

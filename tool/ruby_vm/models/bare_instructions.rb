@@ -102,7 +102,27 @@ class RubyVM::BareInstructions
   end
 
   def handles_sp?
-    /\b(false|0)\b/ !~ @attrs['handles_sp'].expr.expr
+    /\b(false|0)\b/ !~ @attrs.fetch('handles_sp').expr.expr
+  end
+
+  def always_leaf?
+    @attrs.fetch('leaf').expr.expr == 'true;'
+  end
+
+  def handle_canary stmt
+    # Stack canary is basically a good thing that we want to add, however:
+    #
+    # - When the instruction returns variadic number of return values,
+    #   it is not easy to tell where is the stack top.  We can't but
+    #   skip it.
+    #
+    # - When the instruction body is empty (like putobject), we can
+    #   say for 100% sure that canary is a waste of time.
+    #
+    # So we skip canary for those cases.
+    return '' if @sig[:ret].any? {|i| i == '...' }
+    return '' if @expr.blank?
+    return "    #{stmt};\n"
   end
 
   def inspect
@@ -130,6 +150,10 @@ class RubyVM::BareInstructions
     generate_attribute 'rb_num_t', 'width', width
     generate_attribute 'rb_snum_t', 'sp_inc', rets.size - pops.size
     generate_attribute 'bool', 'handles_sp', false
+    generate_attribute 'bool', 'leaf', opes.all? {|o|
+      # Insn with ISEQ should yield it; can never be a leaf.
+      o[:type] != 'ISEQ'
+    }
   end
 
   def typesplit a

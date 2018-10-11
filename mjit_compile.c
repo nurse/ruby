@@ -57,14 +57,14 @@ has_valid_method_type(CALL_CACHE cc)
 }
 
 /* Returns TRUE if iseq is inlinable, otherwise NULL. This becomes TRUE in the same condition
-   as CI_SET_FASTPATH (in vm_callee_setup_arg) is called from vm_call_iseq_setup. */
+   as CC_SET_FASTPATH (in vm_callee_setup_arg) is called from vm_call_iseq_setup. */
 static int
 inlinable_iseq_p(CALL_INFO ci, CALL_CACHE cc, const rb_iseq_t *iseq)
 {
     extern int rb_simple_iseq_p(const rb_iseq_t *iseq);
     return iseq != NULL
         && rb_simple_iseq_p(iseq) && !(ci->flag & VM_CALL_KW_SPLAT) /* Top of vm_callee_setup_arg. In this case, opt_pc is 0. */
-        && (!IS_ARGS_SPLAT(ci) && !IS_ARGS_KEYWORD(ci) && !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED)); /* CI_SET_FASTPATH */
+        && (!IS_ARGS_SPLAT(ci) && !IS_ARGS_KEYWORD(ci) && !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED)); /* CC_SET_FASTPATH */
 }
 
 static int
@@ -97,12 +97,12 @@ comment_id(FILE *f, ID id)
     e = RSTRING_END(name);
     fputs("/* :\"", f);
     for (; p < e; ++p) {
-	switch (c = *p) {
-	  case '*': case '/': if (prev != (c ^ ('/' ^ '*'))) break;
-	  case '\\': case '"': fputc('\\', f);
-	}
-	fputc(c, f);
-	prev = c;
+        switch (c = *p) {
+          case '*': case '/': if (prev != (c ^ ('/' ^ '*'))) break;
+          case '\\': case '"': fputc('\\', f);
+        }
+        fputc(c, f);
+        prev = c;
     }
     fputs("\" */", f);
 #endif
@@ -168,7 +168,7 @@ compile_insns(FILE *f, const struct rb_iseq_constant_body *body, unsigned int st
         pos = compile_insn(f, body, insn, body->iseq_encoded + (pos+1), pos, status, &branch);
         if (status->success && branch.stack_size > body->stack_max) {
             if (mjit_opts.warnings || mjit_opts.verbose)
-                fprintf(stderr, "MJIT warning: JIT stack exceeded its max\n");
+                fprintf(stderr, "MJIT warning: JIT stack size (%d) exceeded its max size (%d)\n", branch.stack_size, body->stack_max);
             status->success = FALSE;
         }
         if (!status->success)

@@ -549,7 +549,7 @@ vm_get_ruby_level_caller_cfp(const rb_execution_context_t *ec, const rb_control_
     return 0;
 }
 
-void
+MJIT_STATIC void
 rb_vm_pop_cfunc_frame(void)
 {
     rb_execution_context_t *ec = GET_EC();
@@ -970,6 +970,7 @@ rb_binding_add_dynavars(VALUE bindval, rb_binding_t *bind, int dyncount, const I
     rb_node_init(&tmp_node, NODE_SCOPE, (VALUE)dyns, 0, 0);
     ast.root = &tmp_node;
     ast.compile_option = 0;
+    ast.line_count = -1;
 
     if (base_iseq) {
 	iseq = rb_iseq_new(&ast, base_iseq->body->location.label, path, realpath, base_iseq, ISEQ_TYPE_EVAL);
@@ -1609,6 +1610,8 @@ vm_init_redefined_flag(void)
     OP(Max, MAX), (C(Array));
     OP(Min, MIN), (C(Array));
     OP(Call, CALL), (C(Proc));
+    OP(And, AND), (C(Integer));
+    OP(Or, OR), (C(Integer));
 #undef C
 #undef OP
 }
@@ -2339,22 +2342,19 @@ vm_init2(rb_vm_t *vm)
 #define RECYCLE_MAX 64
 static VALUE *thread_recycle_stack_slot[RECYCLE_MAX];
 static int thread_recycle_stack_count = 0;
+#endif /* USE_THREAD_DATA_RECYCLE */
 
-static VALUE *
-thread_recycle_stack(size_t size)
+VALUE *
+rb_thread_recycle_stack(size_t size)
 {
+#if USE_THREAD_DATA_RECYCLE
     if (thread_recycle_stack_count > 0) {
 	/* TODO: check stack size if stack sizes are variable */
 	return thread_recycle_stack_slot[--thread_recycle_stack_count];
     }
-    else {
-	return ALLOC_N(VALUE, size);
-    }
+#endif /* USE_THREAD_DATA_RECYCLE */
+    return ALLOC_N(VALUE, size);
 }
-
-#else
-#define thread_recycle_stack(size) ALLOC_N(VALUE, (size))
-#endif
 
 void
 rb_thread_recycle_stack_release(VALUE *stack)
@@ -2535,7 +2535,7 @@ th_init(rb_thread_t *th, VALUE self)
 	/* vm_stack_size is word number.
 	 * th->vm->default_params.thread_vm_stack_size is byte size. */
 	size_t size = th->vm->default_params.thread_vm_stack_size / sizeof(VALUE);
-	ec_set_vm_stack(th->ec, thread_recycle_stack(size), size);
+	ec_set_vm_stack(th->ec, rb_thread_recycle_stack(size), size);
     }
 
     th->ec->cfp = (void *)(th->ec->vm_stack + th->ec->vm_stack_size);
@@ -2842,7 +2842,13 @@ Init_VM(void)
     VALUE fcore;
     VALUE mjit;
 
-    /* ::RubyVM */
+    /*
+     * Document-class: RubyVM
+     *
+     * RubyVM module provides some access to Ruby internal.
+     * This module is for very limited purpose, such as debugging,
+     * prototyping, and research.  Normal users must not use it.
+     */
     rb_cRubyVM = rb_define_class("RubyVM", rb_cObject);
     rb_undef_alloc_func(rb_cRubyVM);
     rb_undef_method(CLASS_OF(rb_cRubyVM), "new");
@@ -3134,7 +3140,6 @@ Init_VM(void)
 
     /* vm_backtrace.c */
     Init_vm_backtrace();
-    VM_PROFILE_ATEXIT();
 }
 
 void

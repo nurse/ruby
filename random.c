@@ -470,12 +470,38 @@ fill_random_bytes_urandom(void *seed, size_t size)
 #endif
 
 #if 0
+#elif defined MAC_OS_X_VERSION_10_7 && MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7
+#include <Security/Security.h>
+
+static int
+fill_random_bytes_syscall(void *seed, size_t size, int unused)
+{
+    int status = SecRandomCopyBytes(kSecRandomDefault, size, seed);
+
+    if (status != errSecSuccess) {
+# if 0
+        CFStringRef s = SecCopyErrorMessageString(status, NULL);
+        const char *m = s ? CFStringGetCStringPtr(s, kCFStringEncodingUTF8) : NULL;
+        fprintf(stderr, "SecRandomCopyBytes failed: %d: %s\n", status,
+                m ? m : "unknown");
+        if (s) CFRelease(s);
+# endif
+        return -1;
+    }
+    return 0;
+}
 #elif defined(HAVE_ARC4RANDOM_BUF)
 static int
 fill_random_bytes_syscall(void *buf, size_t size, int unused)
 {
+#if (defined(__OpenBSD__) && OpenBSD >= 201411) || \
+    (defined(__NetBSD__)  && __NetBSD_Version__ >= 700000000) || \
+    (defined(__FreeBSD__) && __FreeBSD_version >= 1200079)
     arc4random_buf(buf, size);
     return 0;
+#else
+    return -1;
+#endif
 }
 #elif defined(_WIN32)
 static void
@@ -547,13 +573,15 @@ fill_random_bytes_syscall(void *seed, size_t size, int need_secure)
 # define fill_random_bytes_syscall(seed, size, need_secure) -1
 #endif
 
-static int
-fill_random_bytes(void *seed, size_t size, int need_secure)
+int
+ruby_fill_random_bytes(void *seed, size_t size, int need_secure)
 {
     int ret = fill_random_bytes_syscall(seed, size, need_secure);
     if (ret == 0) return ret;
     return fill_random_bytes_urandom(seed, size);
 }
+
+#define fill_random_bytes ruby_fill_random_bytes
 
 static void
 fill_random_seed(uint32_t *seed, size_t cnt)

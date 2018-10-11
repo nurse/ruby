@@ -107,8 +107,8 @@
  */
 VALUE rb_cEnumerator;
 static VALUE rb_cLazy;
-static ID id_rewind, id_new, id_yield, id_to_enum;
-static ID id_next, id_result, id_lazy, id_receiver, id_arguments, id_memo, id_method, id_force;
+static ID id_rewind, id_new, id_to_enum;
+static ID id_next, id_result, id_receiver, id_arguments, id_memo, id_method, id_force;
 static ID id_begin, id_end, id_step, id_exclude_end;
 static VALUE sym_each, sym_cycle;
 
@@ -1272,9 +1272,12 @@ yielder_yield(VALUE obj, VALUE args)
 
 /* :nodoc: */
 static VALUE
-yielder_yield_push(VALUE obj, VALUE args)
+yielder_yield_push(VALUE obj, VALUE arg)
 {
-    yielder_yield(obj, args);
+    struct yielder *ptr = yielder_ptr(obj);
+
+    rb_proc_call_with_block(ptr->proc, 1, &arg, Qnil);
+
     return obj;
 }
 
@@ -1517,7 +1520,7 @@ lazy_init_yielder(VALUE val, VALUE m, int argc, VALUE *argv)
     }
 
     if (cont) {
-	rb_funcall2(yielder, id_yield, 1, &(result->memo_value));
+	rb_funcall2(yielder, idLTLT, 1, &(result->memo_value));
     }
     if (LAZY_MEMO_BREAK_P(result)) {
 	rb_iter_break();
@@ -1612,6 +1615,20 @@ lazy_initialize(int argc, VALUE *argv, VALUE self)
 
     return self;
 }
+
+#if 0 /* for RDoc */
+/*
+ * call-seq:
+ *   lazy.to_a  -> array
+ *   lazy.force -> array
+ *
+ * Expands +lazy+ enumerator to an array.
+ * See Enumerable#to_a.
+ */
+static VALUE lazy_to_a(VALUE self)
+{
+}
+#endif
 
 static void
 lazy_set_args(VALUE lazy, VALUE args)
@@ -1815,7 +1832,9 @@ lazy_map(VALUE obj)
 static VALUE
 lazy_flat_map_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, yielder))
 {
-    return rb_funcallv(yielder, id_yield, argc, argv);
+    VALUE arg = rb_enum_values_pack(argc, argv);
+
+    return rb_funcallv(yielder, idLTLT, 1, &arg);
 }
 
 static VALUE
@@ -1830,12 +1849,12 @@ lazy_flat_map_to_ary(VALUE obj, VALUE yielder)
 {
     VALUE ary = rb_check_array_type(obj);
     if (NIL_P(ary)) {
-	rb_funcall(yielder, id_yield, 1, obj);
+	rb_funcall(yielder, idLTLT, 1, obj);
     }
     else {
 	long i;
 	for (i = 0; i < RARRAY_LEN(ary); i++) {
-	    rb_funcall(yielder, id_yield, 1, RARRAY_AREF(ary, i));
+	    rb_funcall(yielder, idLTLT, 1, RARRAY_AREF(ary, i));
 	}
     }
     return Qnil;
@@ -1848,7 +1867,7 @@ lazy_flat_map_proc(RB_BLOCK_CALL_FUNC_ARGLIST(val, m))
     if (RB_TYPE_P(result, T_ARRAY)) {
 	long i;
 	for (i = 0; i < RARRAY_LEN(result); i++) {
-	    rb_funcall(argv[0], id_yield, 1, RARRAY_AREF(result, i));
+	    rb_funcall(argv[0], idLTLT, 1, RARRAY_AREF(result, i));
 	}
     }
     else {
@@ -1980,38 +1999,43 @@ lazy_grep(VALUE obj, VALUE pattern)
     return lazy_add_method(obj, 0, 0, pattern, rb_ary_new3(1, pattern), funcs);
 }
 
-static VALUE
-lazy_grep_v_func(RB_BLOCK_CALL_FUNC_ARGLIST(val, m))
+static struct MEMO *
+lazy_grep_v_proc(VALUE proc_entry, struct MEMO *result, VALUE memos, long memo_index)
 {
-    VALUE i = rb_enum_values_pack(argc - 1, argv + 1);
-    VALUE result = rb_funcall(m, id_eqq, 1, i);
-
-    if (!RTEST(result)) {
-	rb_funcall(argv[0], id_yield, 1, i);
-    }
-    return Qnil;
+    struct proc_entry *entry = proc_entry_ptr(proc_entry);
+    VALUE chain = rb_funcall(entry->memo, id_eqq, 1, result->memo_value);
+    if (RTEST(chain)) return 0;
+    return result;
 }
 
-static VALUE
-lazy_grep_v_iter(RB_BLOCK_CALL_FUNC_ARGLIST(val, m))
+static struct MEMO *
+lazy_grep_v_iter_proc(VALUE proc_entry, struct MEMO *result, VALUE memos, long memo_index)
 {
-    VALUE i = rb_enum_values_pack(argc - 1, argv + 1);
-    VALUE result = rb_funcall(m, id_eqq, 1, i);
+    struct proc_entry *entry = proc_entry_ptr(proc_entry);
+    VALUE value, chain = rb_funcall(entry->memo, id_eqq, 1, result->memo_value);
 
-    if (!RTEST(result)) {
-	rb_funcall(argv[0], id_yield, 1, rb_yield(i));
-    }
-    return Qnil;
+    if (RTEST(chain)) return 0;
+    value = rb_proc_call_with_block(entry->proc, 1, &(result->memo_value), Qnil);
+    LAZY_MEMO_SET_VALUE(result, value);
+    LAZY_MEMO_RESET_PACKED(result);
+
+    return result;
 }
+
+static const lazyenum_funcs lazy_grep_v_iter_funcs = {
+    lazy_grep_v_iter_proc, 0,
+};
+
+static const lazyenum_funcs lazy_grep_v_funcs = {
+    lazy_grep_v_proc, 0,
+};
 
 static VALUE
 lazy_grep_v(VALUE obj, VALUE pattern)
 {
-    return lazy_set_method(rb_block_call(rb_cLazy, id_new, 1, &obj,
-					 rb_block_given_p() ?
-					 lazy_grep_v_iter : lazy_grep_v_func,
-					 pattern),
-			   rb_ary_new3(1, pattern), 0);
+    const lazyenum_funcs *const funcs = rb_block_given_p() ?
+        &lazy_grep_v_iter_funcs : &lazy_grep_v_funcs;
+    return lazy_add_method(obj, 0, 0, pattern, rb_ary_new3(1, pattern), funcs);
 }
 
 static VALUE
@@ -2041,7 +2065,7 @@ lazy_zip_arrays_func(RB_BLOCK_CALL_FUNC_ARGLIST(val, arrays))
     for (i = 0; i < RARRAY_LEN(arrays); i++) {
 	rb_ary_push(ary, rb_ary_entry(RARRAY_AREF(arrays, i), count));
     }
-    rb_funcall(yielder, id_yield, 1, ary);
+    rb_funcall(yielder, idLTLT, 1, ary);
     rb_ivar_set(yielder, id_memo, LONG2NUM(++count));
     return Qnil;
 }
@@ -2074,7 +2098,7 @@ lazy_zip_func(RB_BLOCK_CALL_FUNC_ARGLIST(val, zip_args))
 		       rb_eStopIteration, (VALUE)0);
 	rb_ary_push(ary, v);
     }
-    rb_funcall(yielder, id_yield, 1, ary);
+    rb_funcall(yielder, idLTLT, 1, ary);
     return Qnil;
 }
 
@@ -2275,46 +2299,49 @@ lazy_drop_while(VALUE obj)
     return lazy_add_method(obj, 0, 0, Qfalse, Qnil, &lazy_drop_while_funcs);
 }
 
-static VALUE
-lazy_uniq_i(VALUE i, int argc, const VALUE *argv, VALUE yielder)
+static int
+lazy_uniq_check(VALUE chain, VALUE memos, long memo_index)
 {
-    VALUE hash;
+    VALUE hash = rb_ary_entry(memos, memo_index);
 
-    hash = rb_attr_get(yielder, id_memo);
     if (NIL_P(hash)) {
         hash = rb_obj_hide(rb_hash_new());
-        rb_ivar_set(yielder, id_memo, hash);
+        rb_ary_store(memos, memo_index, hash);
     }
 
-    if (rb_hash_add_new_element(hash, i, Qfalse))
-	return Qnil;
-    return rb_funcallv(yielder, id_yield, argc, argv);
+    return rb_hash_add_new_element(hash, chain, Qfalse);
 }
 
-static VALUE
-lazy_uniq_func(RB_BLOCK_CALL_FUNC_ARGLIST(i, m))
+static struct MEMO *
+lazy_uniq_proc(VALUE proc_entry, struct MEMO *result, VALUE memos, long memo_index)
 {
-    VALUE yielder = (--argc, *argv++);
-    i = rb_enum_values_pack(argc, argv);
-    return lazy_uniq_i(i, argc, argv, yielder);
+    if (lazy_uniq_check(result->memo_value, memos, memo_index)) return 0;
+    return result;
 }
 
-static VALUE
-lazy_uniq_iter(RB_BLOCK_CALL_FUNC_ARGLIST(i, m))
+static struct MEMO *
+lazy_uniq_iter_proc(VALUE proc_entry, struct MEMO *result, VALUE memos, long memo_index)
 {
-    VALUE yielder = (--argc, *argv++);
-    i = rb_yield_values2(argc, argv);
-    return lazy_uniq_i(i, argc, argv, yielder);
+    VALUE chain = lazyenum_yield(proc_entry, result);
+
+    if (lazy_uniq_check(chain, memos, memo_index)) return 0;
+    return result;
 }
+
+static const lazyenum_funcs lazy_uniq_iter_funcs = {
+    lazy_uniq_iter_proc, 0,
+};
+
+static const lazyenum_funcs lazy_uniq_funcs = {
+    lazy_uniq_proc, 0,
+};
 
 static VALUE
 lazy_uniq(VALUE obj)
 {
-    rb_block_call_func *const func =
-	rb_block_given_p() ? lazy_uniq_iter : lazy_uniq_func;
-    return lazy_set_method(rb_block_call(rb_cLazy, id_new, 1, &obj,
-					 func, 0),
-			   0, 0);
+    const lazyenum_funcs *const funcs =
+        rb_block_given_p() ? &lazy_uniq_iter_funcs : &lazy_uniq_funcs;
+    return lazy_add_method(obj, 0, 0, Qnil, Qnil, funcs);
 }
 
 static VALUE
@@ -2382,6 +2409,15 @@ stop_result(VALUE self)
     return rb_attr_get(self, id_result);
 }
 
+/*
+ * Document-class: Enumerator::ArithmeticSequence
+ *
+ * Enumerator::ArithmeticSequence is a subclass of Enumerator,
+ * that is a representation of sequences of numbers with common difference.
+ * The instances of this class can be generated by Range#step and Numeric#step
+ * methods.
+ */
+
 VALUE
 rb_arith_seq_new(VALUE obj, VALUE meth, int argc, VALUE const *argv,
                  rb_enumerator_size_func *size_fn,
@@ -2396,24 +2432,46 @@ rb_arith_seq_new(VALUE obj, VALUE meth, int argc, VALUE const *argv,
     return aseq;
 }
 
+/*
+ * call-seq: aseq.begin -> num
+ *
+ * Returns the number that defines the first element of this arithmetic
+ * sequence.
+ */
 static inline VALUE
 arith_seq_begin(VALUE self)
 {
     return rb_ivar_get(self, id_begin);
 }
 
+/*
+ * call-seq: aseq.end -> num or nil
+ *
+ * Returns the number that defines the end of this arithmetic sequence.
+ */
 static inline VALUE
 arith_seq_end(VALUE self)
 {
     return rb_ivar_get(self, id_end);
 }
 
+/*
+ * call-seq: aseq.step -> num
+ *
+ * Returns the number that defines the common difference between
+ * two adjacent elements in this arithmetic sequence.
+ */
 static inline VALUE
 arith_seq_step(VALUE self)
 {
     return rb_ivar_get(self, id_step);
 }
 
+/*
+ * call-seq: aseq.exclude_end? -> true or false
+ *
+ * Returns <code>true</code> if this arithmetic sequence excludes its end value.
+ */
 static inline VALUE
 arith_seq_exclude_end(VALUE self)
 {
@@ -2426,6 +2484,14 @@ arith_seq_exclude_end_p(VALUE self)
     return RTEST(arith_seq_exclude_end(self));
 }
 
+/*
+ * call-seq:
+ *   aseq.first -> num or nil
+ *   aseq.first(n) -> an_array
+ *
+ * Returns the first number in this arithmetic sequence,
+ * or an array of the first +n+ elements.
+ */
 static VALUE
 arith_seq_first(int argc, VALUE *argv, VALUE self)
 {
@@ -2454,6 +2520,14 @@ arith_seq_first(int argc, VALUE *argv, VALUE self)
     return rb_call_super(argc, argv);
 }
 
+/*
+ * call-seq:
+ *   aseq.last    -> num or nil
+ *   aseq.last(n) -> an_array
+ *
+ * Returns the last number in this arithmetic sequence,
+ * or an array of the last +n+ elements.
+ */
 static VALUE
 arith_seq_last(int argc, VALUE *argv, VALUE self)
 {
@@ -2517,6 +2591,12 @@ arith_seq_last(int argc, VALUE *argv, VALUE self)
     return ary;
 }
 
+/*
+ * call-seq:
+ *   aseq.inspect -> string
+ *
+ * Convert this arithmetic sequence to a printable form.
+ */
 static VALUE
 arith_seq_inspect(VALUE self)
 {
@@ -2575,6 +2655,13 @@ arith_seq_inspect(VALUE self)
     return str;
 }
 
+/*
+ * call-seq:
+ *   aseq == obj  -> true or false
+ *
+ * Returns <code>true</code> only if +obj+ is an Enumerator::ArithmeticSequence,
+ * has equivalent begin, end, step, and exclude_end? settings.
+ */
 static VALUE
 arith_seq_eq(VALUE self, VALUE other)
 {
@@ -2601,6 +2688,16 @@ arith_seq_eq(VALUE self, VALUE other)
     return Qtrue;
 }
 
+/*
+ * call-seq:
+ *   aseq.hash  -> integer
+ *
+ * Compute a hash-value for this arithmetic sequence.
+ * Two arithmetic sequences with same begin, end, step, and exclude_end?
+ * values will generate the same hash-value.
+ *
+ * See also Object#hash.
+ */
 static VALUE
 arith_seq_hash(VALUE self)
 {
@@ -2626,6 +2723,11 @@ struct arith_seq_gen {
     int excl;
 };
 
+/*
+ * call-seq:
+ *   aseq.each {|i| block } -> aseq
+ *   aseq.each              -> aseq
+ */
 static VALUE
 arith_seq_each(VALUE self)
 {
@@ -2639,7 +2741,7 @@ arith_seq_each(VALUE self)
     s = arith_seq_step(self);
     x = arith_seq_exclude_end_p(self);
 
-    if (ruby_float_step(c, e, s, x, TRUE)) {
+    if (!RB_TYPE_P(s, T_COMPLEX) && ruby_float_step(c, e, s, x, TRUE)) {
         return self;
     }
 
@@ -2710,6 +2812,13 @@ arith_seq_float_step_size(double beg, double end, double step, int excl)
     return n + 1;
 }
 
+/*
+ * call-seq:
+ *   aseq.size -> num or nil
+ *
+ * Returns the number of elements in this arithmetic sequence if it is a finite
+ * sequence.  Otherwise, returns <code>nil</code>.
+ */
 static VALUE
 arith_seq_size(VALUE self)
 {
@@ -2825,6 +2934,9 @@ InitVM_Enumerator(void)
     rb_define_method(rb_cLazy, "chunk_while", lazy_super, -1);
     rb_define_method(rb_cLazy, "uniq", lazy_uniq, 0);
 
+#if 0 /* for RDoc */
+    rb_define_method(rb_cLazy, "to_a", lazy_to_a, 0);
+#endif
     rb_define_alias(rb_cLazy, "force", "to_a");
 
     rb_eStopIteration = rb_define_class("StopIteration", rb_eIndexError);
@@ -2843,7 +2955,7 @@ InitVM_Enumerator(void)
     rb_define_alloc_func(rb_cYielder, yielder_allocate);
     rb_define_method(rb_cYielder, "initialize", yielder_initialize, 0);
     rb_define_method(rb_cYielder, "yield", yielder_yield, -2);
-    rb_define_method(rb_cYielder, "<<", yielder_yield_push, -2);
+    rb_define_method(rb_cYielder, "<<", yielder_yield_push, 1);
 
     /* ArithmeticSequence */
     rb_cArithSeq = rb_define_class_under(rb_cEnumerator, "ArithmeticSequence", rb_cEnumerator);
@@ -2871,11 +2983,9 @@ void
 Init_Enumerator(void)
 {
     id_rewind = rb_intern("rewind");
-    id_yield = rb_intern("yield");
     id_new = rb_intern("new");
     id_next = rb_intern("next");
     id_result = rb_intern("result");
-    id_lazy = rb_intern("lazy");
     id_receiver = rb_intern("receiver");
     id_arguments = rb_intern("arguments");
     id_memo = rb_intern("memo");

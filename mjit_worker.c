@@ -107,7 +107,7 @@
 #define dlopen(name,flag) ((void*)LoadLibrary(name))
 #define dlerror() strerror(rb_w32_map_errno(GetLastError()))
 #define dlsym(handle,name) ((void*)GetProcAddress((handle),(name)))
-#define dlclose(handle) (FreeLibrary(handle))
+#define dlclose(handle) (!FreeLibrary(handle))
 #define RTLD_NOW  -1
 
 #define waitpid(pid,stat_loc,options) (WaitForSingleObject((HANDLE)(pid), INFINITE), GetExitCodeProcess((HANDLE)(pid), (LPDWORD)(stat_loc)), (pid))
@@ -133,7 +133,7 @@ struct rb_mjit_unit {
     /* This value is always set for `compact_all_jit_code`. Also used for lazy deletion. */
     char *o_file;
 #endif
-#if defined(_WIN32) || defined(USE_ELF)
+#if defined(_WIN32)
     /* DLL cannot be removed while loaded on Windows. If this is set, it'll be lazily deleted. */
     char *so_file;
 #endif
@@ -254,20 +254,11 @@ static const char *const CC_COMMON_ARGS[] = {
 #define CC_PATH CC_COMMON_ARGS[0]
 
 static const char *const CC_DEBUG_ARGS[] = {MJIT_DEBUGFLAGS NULL};
-static const char *const CC_OPTIMIZE_ARGS[] = {
-    MJIT_OPTFLAGS
-#ifdef USE_ELF /* at least -g1 is required to get line number on addr2line.c, and -g (-g2) is slow. */
-    "-g1",
-#endif
-    NULL
-};
+static const char *const CC_OPTIMIZE_ARGS[] = {MJIT_OPTFLAGS NULL};
 
 static const char *const CC_LDSHARED_ARGS[] = {MJIT_LDSHARED GCC_PIC_FLAGS NULL};
 static const char *const CC_DLDFLAGS_ARGS[] = {
     MJIT_DLDFLAGS
-#ifdef USE_ELF /* force disable compression to get line number on addr2line.c */
-    MJIT_DLDFLAGS_NOCOMPRESS
-#endif
 #if defined __GNUC__ && !defined __clang__
     "-nostartfiles",
 # if !defined(_WIN32) && !defined(__CYGWIN__)
@@ -299,11 +290,17 @@ verbose(int level, const char *format, ...)
 {
     if (mjit_opts.verbose >= level) {
         va_list args;
+        size_t len = strlen(format);
+        char *full_format = alloca(sizeof(char) * (len + 2));
+
+        /* Creating `format + '\n'` to atomically print format and '\n'. */
+        memcpy(full_format, format, len);
+        full_format[len] = '\n';
+        full_format[len+1] = '\0';
 
         va_start(args, format);
-        vfprintf(stderr, format, args);
+        vfprintf(stderr, full_format, args);
         va_end(args);
-        fprintf(stderr, "\n");
     }
 }
 
@@ -399,7 +396,7 @@ clean_object_files(struct rb_mjit_unit *unit)
     }
 #endif
 
-#if defined(_WIN32) || defined(USE_ELF)
+#if defined(_WIN32)
     if (unit->so_file) {
         char *so_file = unit->so_file;
 
@@ -426,8 +423,9 @@ free_unit(struct rb_mjit_unit *unit)
         unit->iseq->body->jit_func = (mjit_func_t)NOT_COMPILED_JIT_ISEQ_FUNC;
         unit->iseq->body->jit_unit = NULL;
     }
-    if (unit->handle) /* handle is NULL if it's in queue */
-        dlclose(unit->handle);
+    if (unit->handle && dlclose(unit->handle)) { /* handle is NULL if it's in queue */
+        mjit_warning("failed to close handle for u%d: %s", unit->id, dlerror());
+    }
     clean_object_files(unit);
     free(unit);
 }
@@ -674,9 +672,8 @@ exec_process(const char *path, char *const argv[])
 static void
 remove_so_file(const char *so_file, struct rb_mjit_unit *unit)
 {
-#if defined(_WIN32) || defined(USE_ELF)
-    /* Windows can't remove files while it's used. With USE_ELF, we use it to get a line
-       number and symbol name on addr2line for debugging and future optimization. */
+#if defined(_WIN32)
+    /* Windows can't remove files while it's used. */
     unit->so_file = strdup(so_file); /* lazily delete on `clean_object_files()` */
     if (unit->so_file == NULL)
         mjit_warning("failed to allocate memory to lazily remove '%s': %s", so_file, strerror(errno));
@@ -695,9 +692,9 @@ static int
 compile_c_to_so(const char *c_file, const char *so_file)
 {
     int exit_code;
-    const char *files[] = { NULL, NULL, NULL, NULL, "-link", libruby_pathflag, NULL };
+    const char *files[] = { NULL, NULL, NULL, NULL, NULL, NULL, "-link", libruby_pathflag, NULL };
     char **args;
-    char *p;
+    char *p, *obj_file;
 
     /* files[0] = "-Fe*.dll" */
     files[0] = p = alloca(sizeof(char) * (rb_strlen_lit("-Fe") + strlen(so_file) + 1));
@@ -705,22 +702,37 @@ compile_c_to_so(const char *c_file, const char *so_file)
     p = append_str2(p, so_file, strlen(so_file));
     *p = '\0';
 
-    /* files[1] = "-Yu*.pch" */
-    files[1] = p = alloca(sizeof(char) * (rb_strlen_lit("-Yu") + strlen(pch_file) + 1));
+    /* files[1] = "-Fo*.obj" */
+    /* We don't need .obj file, but it's somehow created to cwd without -Fo and we want to control the output directory. */
+    files[1] = p = alloca(sizeof(char) * (rb_strlen_lit("-Fo") + strlen(so_file) - rb_strlen_lit(DLEXT) + rb_strlen_lit(".obj") + 1));
+    obj_file = p = append_lit(p, "-Fo");
+    p = append_str2(p, so_file, strlen(so_file) - rb_strlen_lit(DLEXT));
+    p = append_lit(p, ".obj");
+    *p = '\0';
+
+    /* files[2] = "-Yu*.pch" */
+    files[2] = p = alloca(sizeof(char) * (rb_strlen_lit("-Yu") + strlen(pch_file) + 1));
     p = append_lit(p, "-Yu");
     p = append_str2(p, pch_file, strlen(pch_file));
     *p = '\0';
 
-    /* files[2] = "C:/.../rb_mjit_header-*.obj" */
-    files[2] = p = alloca(sizeof(char) * (strlen(pch_file) + 1));
+    /* files[3] = "C:/.../rb_mjit_header-*.obj" */
+    files[3] = p = alloca(sizeof(char) * (strlen(pch_file) + 1));
     p = append_str2(p, pch_file, strlen(pch_file) - strlen(".pch"));
     p = append_lit(p, ".obj");
     *p = '\0';
 
-    /* files[3] = "-Tc*.c" */
-    files[3] = p = alloca(sizeof(char) * (rb_strlen_lit("-Tc") + strlen(c_file) + 1));
+    /* files[4] = "-Tc*.c" */
+    files[4] = p = alloca(sizeof(char) * (rb_strlen_lit("-Tc") + strlen(c_file) + 1));
     p = append_lit(p, "-Tc");
     p = append_str2(p, c_file, strlen(c_file));
+    *p = '\0';
+
+    /* files[5] = "-Fd*.pdb" */
+    files[5] = p = alloca(sizeof(char) * (rb_strlen_lit("-Fd") + strlen(pch_file) + 1));
+    p = append_lit(p, "-Fd");
+    p = append_str2(p, pch_file, strlen(pch_file) - rb_strlen_lit(".pch"));
+    p = append_lit(p, ".pdb");
     *p = '\0';
 
     args = form_args(5, CC_LDSHARED_ARGS, CC_CODEFLAG_ARGS,
@@ -729,25 +741,42 @@ compile_c_to_so(const char *c_file, const char *so_file)
         return FALSE;
 
     {
-        int stdout_fileno = _fileno(stdout);
-        int orig_fd = dup(stdout_fileno);
-        int dev_null = rb_cloexec_open(ruby_null_device, O_WRONLY, 0);
-
         /* Discard cl.exe's outputs like:
              _ruby_mjit_p12u3.c
-               Creating library C:.../_ruby_mjit_p12u3.lib and object C:.../_ruby_mjit_p12u3.exp
-           TODO: Don't discard them on --jit-verbose=2+ */
-        dup2(dev_null, stdout_fileno);
-        exit_code = exec_process(cc_path, args);
-        dup2(orig_fd, stdout_fileno);
+               Creating library C:.../_ruby_mjit_p12u3.lib and object C:.../_ruby_mjit_p12u3.exp */
+        int stdout_fileno, orig_fd, dev_null;
+        if (mjit_opts.verbose <= 1) {
+            stdout_fileno = _fileno(stdout);
+            orig_fd = dup(stdout_fileno);
+            dev_null = rb_cloexec_open(ruby_null_device, O_WRONLY, 0);
 
-        close(orig_fd);
-        close(dev_null);
+            dup2(dev_null, stdout_fileno);
+        }
+        exit_code = exec_process(cc_path, args);
+        if (mjit_opts.verbose <= 1) {
+            dup2(orig_fd, stdout_fileno);
+
+            close(orig_fd);
+            close(dev_null);
+        }
     }
     free(args);
 
-    if (exit_code != 0)
+    if (exit_code == 0) {
+        /* remove never-used files (.obj, .lib, .exp, .pdb). XXX: Is there any way not to generate this? */
+        if (!mjit_opts.save_temps) {
+            char *before_dot;
+            remove_file(obj_file);
+
+            before_dot = obj_file + strlen(obj_file) - rb_strlen_lit(".obj");
+            append_lit(before_dot, ".lib"); remove_file(obj_file);
+            append_lit(before_dot, ".exp"); remove_file(obj_file);
+            append_lit(before_dot, ".pdb"); remove_file(obj_file);
+        }
+    }
+    else {
         verbose(2, "compile_c_to_so: compile error: %d", exit_code);
+    }
     return exit_code == 0;
 }
 #else /* _MSC_VER */
@@ -1098,7 +1127,7 @@ convert_unit_to_func(struct rb_mjit_unit *unit)
     success = compile_c_to_so(c_file, so_file);
 #else
     /* splitting .c -> .o step and .o -> .so step, to cache .o files in the future */
-    if (success = compile_c_to_o(c_file, o_file)) {
+    if ((success = compile_c_to_o(c_file, o_file)) != 0) {
         const char *o_files[2] = { NULL, NULL };
         o_files[0] = o_file;
         success = link_o_to_so(o_files, so_file);
