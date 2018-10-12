@@ -8,12 +8,7 @@ environment:
   zlib_version: "1.2.11"
   matrix:
     - build: vs
-      vs: 120
-      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2013
-    - build: vs
       vs: 140
-      APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
-    - build: msys2
       APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2015
 matrix:
   fast_finish: true
@@ -59,10 +54,8 @@ for:
     - SET BITS=%Platform:x86=32%
     - SET BITS=%BITS:x=%
     - SET OPENSSL_DIR=c:\OpenSSL-Win%BITS%
-    - SET VS140COMNTOOLS=C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\Tools\
     - CALL SET vcvars=%%^VS%VS%COMNTOOLS^%%..\..\VC\vcvarsall.bat
     - SET vcvars
-    - dir "C:\Program Files (x86)"
     - '"%vcvars%" %Platform:x64=amd64%'
     - SET ruby_path=C:\Ruby%ruby_version:-x86=%
     - SET PATH=\usr\local\bin;%ruby_path%\bin;%PATH%;C:\msys64\mingw64\bin;C:\msys64\usr\bin
