@@ -153,23 +153,27 @@ typedef struct obj_info {
     uintptr_t base_addr;
     uintptr_t vmaddr;
     struct dwarf_section debug_abbrev;
+    struct dwarf_section debug_addr;
     struct dwarf_section debug_info;
     struct dwarf_section debug_line;
     struct dwarf_section debug_ranges;
+    struct dwarf_section debug_rnglists;
     struct dwarf_section debug_str;
     struct obj_info *next;
 } obj_info_t;
 
-#define DWARF_SECTION_COUNT 5
+#define DWARF_SECTION_COUNT 7
 
 static struct dwarf_section *
 obj_dwarf_section_at(obj_info_t *obj, int n)
 {
     struct dwarf_section *ary[] = {
         &obj->debug_abbrev,
+        &obj->debug_addr,
         &obj->debug_info,
         &obj->debug_line,
         &obj->debug_ranges,
+        &obj->debug_rnglists,
         &obj->debug_str
     };
     if (n < 0 || DWARF_SECTION_COUNT <= n) {
@@ -762,6 +766,17 @@ enum
 };
 
 enum {
+    DW_RLE_end_of_list = 0x00,
+    DW_RLE_base_addressx = 0x01,
+    DW_RLE_startx_endx = 0x02,
+    DW_RLE_startx_length = 0x03,
+    DW_RLE_offset_pair = 0x04,
+    DW_RLE_base_address = 0x05,
+    DW_RLE_start_end = 0x06,
+    DW_RLE_start_length = 0x07,
+};
+
+enum {
     VAL_none = 0,
     VAL_cstr = 1,
     VAL_data = 2,
@@ -783,6 +798,7 @@ typedef struct {
     char *pend;
     char *q0;
     char *q;
+    char *debug_rnglists_start;
     int format; /* 4 or 8 */;
     uint8_t address_size;
     int level;
@@ -882,9 +898,39 @@ read_uintptr(char **ptr)
 }
 
 static uint64_t
+read_uintN(char **ptr, size_t n)
+{
+    switch (n) {
+      case 1:
+        return read_uint8(ptr);
+      case 2:
+        return read_uint16(ptr);
+      case 3:
+        return read_uint24(ptr);
+      case 4:
+        return read_uint32(ptr);
+      case 8:
+        return read_uint64(ptr);
+      default:
+        fprintf(stderr, "unknown size for read_uintN(..., %zd)", n);
+        abort();
+    }
+}
+
+static uint64_t
 read_uint(DebugInfoReader *reader)
 {
     if (reader->format == 4) {
+        return read_uint32(&reader->p);
+    } else { /* 64 bit */
+        return read_uint64(&reader->p);
+    }
+}
+
+static uint64_t
+read_addr(DebugInfoReader *reader)
+{
+    if (reader->address_size == 4) {
         return read_uint32(&reader->p);
     } else { /* 64 bit */
         return read_uint64(&reader->p);
@@ -904,6 +950,29 @@ read_sleb128(DebugInfoReader *reader)
 }
 
 static void
+di_parse_debug_rnglists(DebugInfoReader *reader)
+{
+    char *p = reader->obj->debug_rnglists.ptr;
+    uint64_t unit_length;
+    uint16_t version;
+    if (!p) return;
+    unit_length = read_uint32(&p);
+    if (unit_length == 0xffffffff) {
+        unit_length = read_uint64(&p);
+        reader->format = 8;
+    }
+    version = read_uint16(&p);
+    if (version > 5) {
+        return;
+    }
+    /* address_size =*/ read_uint8(&p);
+    /* segment_selector_size =*/ read_uint8(&p);
+    /* offset_entry_count =*/ read_uint32(&p);
+
+    reader->debug_rnglists_start = p;
+}
+
+static void
 debug_info_reader_init(DebugInfoReader *reader, obj_info_t *obj)
 {
     reader->file = obj->mapped;
@@ -911,6 +980,7 @@ debug_info_reader_init(DebugInfoReader *reader, obj_info_t *obj)
     reader->p = obj->debug_info.ptr;
     reader->pend = obj->debug_info.ptr + obj->debug_info.size;
     reader->debug_line_cu_end = obj->debug_line.ptr;
+    di_parse_debug_rnglists(reader);
 }
 
 static void
@@ -932,6 +1002,9 @@ di_read_debug_abbrev_cu(DebugInfoReader *reader)
             uint64_t at = uleb128(&p);
             uint64_t form = uleb128(&p);
             if (!at && !form) break;
+            if (form == DW_FORM_implicit_const) {
+                sleb128(&p);
+            }
         }
     }
 }
@@ -1005,14 +1078,7 @@ debug_info_reader_read_value(DebugInfoReader *reader, uint64_t form, DebugInfoVa
 {
     switch (form) {
       case DW_FORM_addr:
-        if (reader->address_size == 4) {
-            set_uint_value(v, read_uint32(&reader->p));
-        } else if (reader->address_size == 8) {
-            set_uint_value(v, read_uint64(&reader->p));
-        } else {
-            fprintf(stderr,"unknown address_size:%d", reader->address_size);
-            abort();
-        }
+        set_uint_value(v, read_addr(reader));
         break;
       case DW_FORM_block2:
         v->size = read_uint16(&reader->p);
@@ -1064,14 +1130,7 @@ debug_info_reader_read_value(DebugInfoReader *reader, uint64_t form, DebugInfoVa
         set_uint_value(v, read_uleb128(reader));
         break;
       case DW_FORM_ref_addr:
-        if (reader->address_size == 4) {
-            set_uint_value(v, read_uint32(&reader->p));
-        } else if (reader->address_size == 8) {
-            set_uint_value(v, read_uint64(&reader->p));
-        } else {
-            fprintf(stderr,"unknown address_size:%d", reader->address_size);
-            abort();
-        }
+        set_uint_value(v, read_addr(reader));
         break;
       case DW_FORM_ref1:
         set_uint_value(v, read_uint8(&reader->p));
@@ -1214,6 +1273,9 @@ di_find_abbrev(DebugInfoReader *reader, uint64_t abbrev_number)
             uint64_t at = uleb128(&p);
             uint64_t form = uleb128(&p);
             if (!at && !form) break;
+            if (form == DW_FORM_implicit_const) {
+                sleb128(&p);
+            }
         }
     }
     return p;
@@ -1354,19 +1416,70 @@ ranges_include(DebugInfoReader *reader, ranges_t *ptr, uint64_t addr)
         }
     }
     else if (ptr->ranges_set) {
-        /* TODO: support base address selection entry */
-        char *p = reader->obj->debug_ranges.ptr + ptr->ranges;
-        uint64_t base = ptr->low_pc_set ? ptr->low_pc : reader->current_low_pc;
-        for (;;) {
-            uintptr_t from = read_uintptr(&p);
-            uintptr_t to = read_uintptr(&p);
-            if (!from && !to) break;
-            if (from == UINTPTR_MAX) {
-                /* base address selection entry */
-                base = to;
+        if (reader->debug_rnglists_start) {
+            /* DWARF Version 5 */
+            char *p = reader->debug_rnglists_start + ptr->ranges;
+            uint64_t base = ptr->low_pc_set ? ptr->low_pc : reader->current_low_pc;
+            for (;;) {
+                uint8_t kind = *p++;
+                uint64_t from, to;
+                fprintf(stderr, "%d: the range entry's kind: %d at off:%tx pos:%tx ranges:%lx\n", __LINE__, kind, p-1 - reader->debug_rnglists_start,reader->debug_rnglists_start-reader->obj->mapped,ptr->ranges);
+                switch (kind) {
+                  case DW_RLE_end_of_list:
+                    return false;
+                  case DW_RLE_base_addressx:
+                    base = uleb128(&p);
+                    base = (uint64_t)reader->obj->debug_addr.ptr + base * reader->address_size;
+                    continue;
+                  case DW_RLE_startx_endx:
+                    from = uleb128(&p);
+                    to = uleb128(&p);
+                    from = (uint64_t)reader->obj->debug_addr.ptr + from * reader->address_size;
+                    to = (uint64_t)reader->obj->debug_addr.ptr + to * reader->address_size;
+                    break;
+                  case DW_RLE_startx_length:
+                    from = uleb128(&p);
+                    from = (uint64_t)reader->obj->debug_addr.ptr + from * reader->address_size;
+                    to = from + uleb128(&p);
+                    break;
+                  case DW_RLE_offset_pair:
+                    from = base + uleb128(&p);
+                    to = base + uleb128(&p);
+                    break;
+                  case DW_RLE_base_address:
+                    base = read_uintN(&p, reader->address_size);
+                    continue;
+                  case DW_RLE_start_end:
+                    from = read_uintN(&p, reader->address_size);
+                    to = read_uintN(&p, reader->address_size);
+                    break;
+                  case DW_RLE_start_length:
+                    from = read_uintN(&p, reader->address_size);
+                    to = from + read_uintN(&p, reader->address_size);
+                    break;
+                  default:
+                    fprintf(stderr, "%d: unknown kind of the range entry %d\n", __LINE__, kind);
+                    abort();
+                }
+                if (from <= addr && addr < to) {
+                    return from;
+                }
             }
-            else if (base + from <= addr && addr < base + to) {
-                return from;
+        }
+        else {
+            char *p = reader->obj->debug_ranges.ptr + ptr->ranges;
+            uint64_t base = ptr->low_pc_set ? ptr->low_pc : reader->current_low_pc;
+            for (;;) {
+                uintptr_t from = read_uintptr(&p);
+                uintptr_t to = read_uintptr(&p);
+                if (!from && !to) break;
+                if (from == UINTPTR_MAX) {
+                    /* base address selection entry */
+                    base = to;
+                }
+                else if (base + from <= addr && addr < base + to) {
+                    return from;
+                }
             }
         }
     }
@@ -1378,7 +1491,7 @@ ranges_include(DebugInfoReader *reader, ranges_t *ptr, uint64_t addr)
     return false;
 }
 
-#if 0
+#if 1
 static void
 ranges_inspect(DebugInfoReader *reader, ranges_t *ptr)
 {
@@ -1519,10 +1632,9 @@ debug_info_read(DebugInfoReader *reader, int num_traces, void **traces,
         /* enumerate abbrev */
         for (;;) {
             DebugInfoValue v = {{}};
-            //ptrdiff_t pos = reader->p - reader->p0;
             if (!di_read_record(reader, &v)) break;
-            //fprintf(stderr,"\n%d:%tx: AT:%lx FORM:%lx\n",__LINE__,pos,v.at,v.form);
-            //div_inspect(&v);
+            /* fprintf(stderr,"\n%d:%tx: AT:%lx FORM:%lx\n",__LINE__,pos,v.at,v.form); */
+            /* div_inspect(&v); */
             switch (v.at) {
               case DW_AT_name:
                 line.sname = get_cstr_value(&v);
@@ -1542,20 +1654,21 @@ debug_info_read(DebugInfoReader *reader, int num_traces, void **traces,
                 goto skip_die;
               case DW_AT_inline:
                 /* 1 or 3 */
-                break; // goto skip_die;
+                break; /* goto skip_die; */
               case DW_AT_abstract_origin:
                 read_abstract_origin(reader, v.as.uint64, &line);
-                break; //goto skip_die;
+                break; /* goto skip_die; */
             }
         }
         /* ranges_inspect(reader, &ranges); */
-        /* fprintf(stderr,"%d:%tx: %x ",__LINE__,diepos,die.tag); */
+        fprintf(stderr,"%d:%tx: %x\n",__LINE__,die.pos,die.tag); // */
         for (int i=offset; i < num_traces; i++) {
             uintptr_t addr = (uintptr_t)traces[i];
             uintptr_t offset = addr - reader->obj->base_addr + reader->obj->vmaddr;
             uintptr_t saddr = ranges_include(reader, &ranges, offset);
             if (saddr) {
-                /* fprintf(stderr, "%d:%tx: %d %lx->%lx %x %s: %s/%s %d %s %s %s\n",__LINE__,die.pos, i,addr,offset, die.tag,line.sname,line.dirname,line.filename,line.line,reader->obj->path,line.sname,lines[i].sname); */
+        ranges_inspect(reader, &ranges);
+                fprintf(stderr, "%d:%tx: %d %lx->%lx %x %s: %s/%s %d %s %s %s\n",__LINE__,die.pos, i,addr,offset, die.tag,line.sname,line.dirname,line.filename,line.line,reader->obj->path,line.sname,lines[i].sname); // */
                 if (lines[i].sname) {
                     line_info_t *lp = malloc(sizeof(line_info_t));
                     memcpy(lp, &lines[i], sizeof(line_info_t));
@@ -1691,9 +1804,11 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
             else {
                 const char *debug_section_names[] = {
                     ".debug_abbrev",
+                    ".debug_addr",
                     ".debug_info",
                     ".debug_line",
                     ".debug_ranges",
+                    ".debug_rnglists",
                     ".debug_str"
                 };
 
@@ -1891,9 +2006,11 @@ fill_lines(int num_traces, void **traces, int check_debuglink,
             {
                 static const char *debug_section_names[] = {
                     "__debug_abbrev",
+                    "__debug_addr",
                     "__debug_info",
                     "__debug_line",
                     "__debug_ranges",
+                    "__debug_rnglists",
                     "__debug_str"
                 };
                 struct segment_command_64 *scmd = (struct segment_command_64 *)lcmd;
