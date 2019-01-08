@@ -2483,6 +2483,26 @@ rb_time_new(time_t sec, long usec)
     return time_new_timew(rb_cTime, timew);
 }
 
+static VALUE
+time_new_with_vtm_and_tzmode(VALUE klass, struct vtm *vtm, int tzmode) {
+    switch (tzmode) {
+      case TIME_TZMODE_UTC:
+        return time_gmtime(time_new_timew(klass, timegmw(vtm)));
+      case TIME_TZMODE_LOCALTIME:
+        return time_localtime(time_new_timew(klass, timelocalw(vtm)));
+      case TIME_TZMODE_FIXOFF: {
+        wideval_t timew = wsub(timegmw(vtm), rb_time_magnify(v2w(vtm->utc_offset)));
+        VALUE time = time_new_timew(klass, timew);
+        validate_utc_offset(vtm->utc_offset);
+        time_set_utc_offset(time, vtm->utc_offset);
+        return time_fixoff(time);
+      }
+      case TIME_TZMODE_UNINITIALIZED:
+      default:
+        rb_raise(rb_eArgError, "uninitialized/unknown tzmode %d", tzmode);
+    }
+}
+
 /* returns localtime time object */
 VALUE
 rb_time_nano_new(time_t sec, long nsec)
@@ -3463,6 +3483,24 @@ time_s_mktime(int argc, VALUE *argv, VALUE klass)
 
     time_arg(argc, argv, &vtm);
     return time_localtime(time_new_timew(klass, timelocalw(&vtm)));
+}
+
+int ruby_strptime(const char *restrict str, const char *restrict format, struct vtm *restrict vtm);
+/*
+ *  call-seq:
+ *     Time.strptime(str, format)   -> time
+ *
+ *
+ */
+static VALUE
+time_s_strptime(VALUE klass, VALUE str, VALUE format)
+{
+    struct vtm vtm = {};
+    int tzmode = ruby_strptime(StringValueCStr(str), StringValueCStr(format), &vtm);
+    if (tzmode == TIME_TZMODE_UNINITIALIZED) {
+        return Qnil;
+    }
+    return time_new_with_vtm_and_tzmode(klass, &vtm, tzmode);
 }
 
 /*
@@ -5694,6 +5732,7 @@ Init_Time(void)
     rb_define_singleton_method(rb_cTime, "gm", time_s_mkutc, -1);
     rb_define_singleton_method(rb_cTime, "local", time_s_mktime, -1);
     rb_define_singleton_method(rb_cTime, "mktime", time_s_mktime, -1);
+    rb_define_singleton_method(rb_cTime, "strptime", time_s_strptime, 2);
 
     rb_define_method(rb_cTime, "to_i", time_to_i, 0);
     rb_define_method(rb_cTime, "to_f", time_to_f, 0);
