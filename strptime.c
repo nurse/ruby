@@ -112,9 +112,11 @@ parse_digitsv(const char **ss, int width, VALUE *vp) {
 
 struct strptime {
     VALUE tm_year;
+    VALUE tm_iso_week_year;
     VALUE tm_cent;
     int tm_gmtoff; /* INT_MAX or other */
     int tm_yy;
+    int tm_iso_week_yy;
     int tm_mon; /* 1..12 */
     int tm_mday;
     int tm_hour;
@@ -128,7 +130,14 @@ struct strptime {
     int tm_ampm; /* -1:unknown, 0:am, 12:pm */
 };
 
-/* `width` only affects only %C, %Y, and %N. */
+/* Ruby strptime implmentation
+ *
+ * This specification is based on strptime(3) with some extensions.
+ * `width` only affects %C, %Y, and %N.
+ *
+ * It returns the first character in `buf` which is not consumed if success.
+ " It returns NULL if failure.
+ */
 static char *
 ruby_strptime0(const char *restrict buf, const char *restrict format,
         struct strptime *restrict tm) {
@@ -223,11 +232,11 @@ start:
             if (!parse_digits(&s, 2, &tm->tm_mday)) return NULL;
             break;
           case 'g':
-            /* TODO */
-            abort();
+            if (!parse_digits(&s, 2, &tm->tm_iso_week_yy)) return NULL;
+            break;
           case 'G':
-            /* TODO */
-            abort();
+            if (!parse_digitsv(&s, width ? width : 4, &tm->tm_iso_week_year)) return NULL;
+            break;
           case 'H':
             if (!parse_digits(&s, 2, &tm->tm_hour)) return NULL;
             break;
@@ -251,9 +260,16 @@ start:
             break;
           case 'p':
             scan_ampm(&s, &tm->tm_ampm);
+            break;
           case 'r':
-            /* TODO */
-            abort();
+            if (!parse_digits(&s, 2, &tm->tm_hour12)) return NULL;
+            if (*s++ != ':') return NULL;
+            if (!parse_digits(&s, 2, &tm->tm_min)) return NULL;
+            if (*s++ != ':') return NULL;
+            if (!parse_digits(&s, 2, &tm->tm_sec)) return NULL;
+            while (ISSPACE(*s)) s++;
+            scan_ampm(&s, &tm->tm_ampm);
+            break;
           case 'R':
             if (!parse_digits(&s, 2, &tm->tm_hour)) return NULL;
             if (*s++ != ':') return NULL;
@@ -278,14 +294,14 @@ start:
             if (tm->tm_wday == 7) tm->tm_wday = 0;
             break;
           case 'U':
-            /* TODO */
-            abort();
+            if (!parse_digits(&s, 2, &tm->tm_wnum0)) return NULL;
+            break;
           case 'w':
             if (!parse_digits(&s, 1, &tm->tm_wday)) return NULL;
             break;
           case 'W':
-            /* TODO */
-            abort();
+            if (!parse_digits(&s, 2, &tm->tm_wnum1)) return NULL;
+            break;
           case 'y':
             if (!parse_digits(&s, 2, &tm->tm_yy)) return NULL;
             break;
