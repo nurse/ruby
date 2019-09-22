@@ -230,11 +230,11 @@ module MonitorMixin
   def mon_synchronize
     # Prevent interrupt on handling interrupts; for example timeout errors
     # it may break locking state.
-    Thread.handle_interrupt(EXCEPTION_NEVER){ mon_enter }
+    mon_enter
     begin
       yield
     ensure
-      Thread.handle_interrupt(EXCEPTION_NEVER){ mon_exit }
+      mon_exit
     end
   end
   alias synchronize mon_synchronize
