@@ -141,6 +141,7 @@ COMMONOBJS    = array.$(OBJEXT) \
 		sprintf.$(OBJEXT) \
 		st.$(OBJEXT) \
 		strftime.$(OBJEXT) \
+		strptime.$(OBJEXT) \
 		string.$(OBJEXT) \
 		struct.$(OBJEXT) \
 		symbol.$(OBJEXT) \
@@ -15019,6 +15020,15 @@ strftime.$(OBJEXT): {$(VPATH)}strftime.c
 strftime.$(OBJEXT): {$(VPATH)}subst.h
 strftime.$(OBJEXT): {$(VPATH)}timev.h
 strftime.$(OBJEXT): {$(VPATH)}util.h
+strptime.$(OBJEXT): $(hdrdir)/ruby/ruby.h
+strptime.$(OBJEXT): $(top_srcdir)/include/ruby.h
+strptime.$(OBJEXT): {$(VPATH)}config.h
+strptime.$(OBJEXT): {$(VPATH)}defines.h
+strptime.$(OBJEXT): {$(VPATH)}intern.h
+strptime.$(OBJEXT): {$(VPATH)}internal.h
+strptime.$(OBJEXT): {$(VPATH)}missing.h
+strptime.$(OBJEXT): {$(VPATH)}strptime.c
+strptime.$(OBJEXT): {$(VPATH)}timev.h
 string.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 string.$(OBJEXT): $(top_srcdir)/internal/array.h
 string.$(OBJEXT): $(top_srcdir)/internal/basic_operators.h
