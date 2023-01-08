@@ -791,7 +791,6 @@ class TestTime < Test::Unit::TestCase
 
   def test_strftime
     t2000 = get_t2000
-    t = Time.at(946684800).getlocal
     assert_equal("Sat", t2000.strftime("%a"))
     assert_equal("Saturday", t2000.strftime("%A"))
     assert_equal("Jan", t2000.strftime("%b"))
