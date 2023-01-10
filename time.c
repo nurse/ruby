@@ -2687,23 +2687,22 @@ rb_time_new(time_t sec, long usec)
     return time_new_timew(rb_cTime, timenano2timew(sec, usec * 1000));
 }
 
-static VALUE
-time_new_with_vtm_and_tzmode(VALUE klass, struct vtm *vtm, int tzmode) {
-    switch (tzmode) {
-      case TIME_TZMODE_UTC:
+VALUE
+rb_time_new_with_vtm(VALUE klass, struct vtm *vtm) {
+    switch (vtm->utc_offset) {
+      case UTC_ZONE:
         return time_gmtime(time_new_timew(klass, timegmw(vtm)));
-      case TIME_TZMODE_LOCALTIME:
+      case Qnil:
+        validate_vtm(vtm);
         return time_localtime(time_new_timew(klass, timelocalw(vtm)));
-      case TIME_TZMODE_FIXOFF: {
+      default: {
+        validate_vtm(vtm);
         wideval_t timew = wsub(timegmw(vtm), rb_time_magnify(v2w(vtm->utc_offset)));
         VALUE time = time_new_timew(klass, timew);
         validate_utc_offset(vtm->utc_offset);
         time_set_utc_offset(time, vtm->utc_offset);
         return time_fixoff(time);
       }
-      case TIME_TZMODE_UNINITIALIZED:
-      default:
-        rb_raise(rb_eArgError, "uninitialized/unknown tzmode %d", tzmode);
     }
 }
 
@@ -3699,7 +3698,7 @@ time_s_mktime(int argc, VALUE *argv, VALUE klass)
     return time_localtime(time_new_timew(klass, timelocalw(&vtm)));
 }
 
-int ruby_strptime(const char *restrict str, const char *restrict format, struct vtm *restrict vtm);
+VALUE ruby_strptime(const char *restrict str, const char *restrict format);
 /*
  *  call-seq:
  *     Time.strptime(str, format)   -> time
@@ -3709,12 +3708,7 @@ int ruby_strptime(const char *restrict str, const char *restrict format, struct 
 static VALUE
 time_s_strptime(VALUE klass, VALUE str, VALUE format)
 {
-    struct vtm vtm = {};
-    int tzmode = ruby_strptime(StringValueCStr(str), StringValueCStr(format), &vtm);
-    if (tzmode == TIME_TZMODE_UNINITIALIZED) {
-        return Qnil;
-    }
-    return time_new_with_vtm_and_tzmode(klass, &vtm, tzmode);
+    return ruby_strptime(StringValueCStr(str), StringValueCStr(format));
 }
 
 /*

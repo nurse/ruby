@@ -15022,10 +15022,8 @@ strftime.$(OBJEXT): {$(VPATH)}timev.h
 strftime.$(OBJEXT): {$(VPATH)}util.h
 strptime.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 strptime.$(OBJEXT): $(top_srcdir)/include/ruby.h
-strptime.$(OBJEXT): {$(VPATH)}config.h
-strptime.$(OBJEXT): {$(VPATH)}defines.h
-strptime.$(OBJEXT): {$(VPATH)}intern.h
-strptime.$(OBJEXT): {$(VPATH)}internal.h
+strptime.$(OBJEXT): {$(VPATH)}internal/bignum.h
+strptime.$(OBJEXT): {$(VPATH)}internal/fixnum.h
 strptime.$(OBJEXT): {$(VPATH)}missing.h
 strptime.$(OBJEXT): {$(VPATH)}strptime.c
 strptime.$(OBJEXT): {$(VPATH)}timev.h

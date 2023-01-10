@@ -1,7 +1,12 @@
 #include <ruby/ruby.h>
 #include <stdbool.h>
-#include "internal.h"
+#include "internal/bignum.h"
+#include "internal/fixnum.h"
 #include "timev.h"
+
+#define VTM_WDAY_INITVAL (7)
+#define VTM_ISDST_INITVAL (3)
+#define UTC_ZONE Qundef
 
 static const char *weekday_names[] = {
     "sunday",
@@ -110,10 +115,35 @@ parse_digitsv(const char **ss, int width, VALUE *vp) {
     return !NIL_P(v);
 }
 
+static void
+dump_vtm(struct vtm *vtm) {
+    switch (vtm->utc_offset) {
+      case UTC_ZONE:
+        fprintf(stderr, "%d: %04d-%02d-%02d %02d:%02d:%02d.%d UTC\n",
+                __LINE__,
+                FIX2INT(vtm->year), vtm->mon, vtm->mday, vtm->hour, vtm->min, vtm->sec,
+                FIX2INT(vtm->subsecx));
+        break;
+      case Qnil: /* localtime */
+        fprintf(stderr, "%d: %04d-%02d-%02d %02d:%02d:%02d.%d local\n",
+                __LINE__,
+                FIX2INT(vtm->year), vtm->mon, vtm->mday, vtm->hour, vtm->min, vtm->sec,
+                FIX2INT(vtm->subsecx));
+        break;
+      default:
+        fprintf(stderr, "%d: %04d-%02d-%02d %02d:%02d:%02d.%d %+d\n",
+                __LINE__,
+                FIX2INT(vtm->year), vtm->mon, vtm->mday, vtm->hour, vtm->min, vtm->sec,
+                FIX2INT(vtm->subsecx), FIX2INT(vtm->utc_offset));
+        break;
+    }
+}
+
 struct strptime {
     VALUE tm_year;
     VALUE tm_cent;
     VALUE tm_isoyear;
+    VALUE tm_unixtime;
     int tm_gmtoff; /* INT_MAX or other */
     int tm_yy;
     int tm_mon; /* 1..12 */
@@ -129,7 +159,7 @@ struct strptime {
     int tm_ampm; /* -1:unknown, 0:am, 12:pm */
     int tm_isoyy;
     int tm_weekU;
-    int tm_weekU;
+    int tm_weekW;
 };
 
 /* `width` only affects only %C, %Y, and %N. */
@@ -221,9 +251,9 @@ start:
             break;
           case 'F':
             if (!parse_digitsv(&s, 4, &tm->tm_year)) return NULL;
-            if (*s++ != ':') return NULL;
+            if (*s++ != '-') return NULL;
             if (!parse_digits(&s, 2, &tm->tm_mon)) return NULL;
-            if (*s++ != ':') return NULL;
+            if (*s++ != '-') return NULL;
             if (!parse_digits(&s, 2, &tm->tm_mday)) return NULL;
             break;
           case 'g':
@@ -252,6 +282,13 @@ start:
             while (ISSPACE(*s)) s++;
             break;
           case 'N':
+            {
+                const char *s0 = s;
+                if (!parse_digits(&s, 9, &tm->tm_nsec)) return NULL;
+                for (width = (int)(s - s0); width < 9; width++) {
+                    tm->tm_nsec *= 10;
+                }
+            }
             break;
           case 'p':
             scan_ampm(&s, &tm->tm_ampm);
@@ -271,7 +308,7 @@ start:
             if (!parse_digits(&s, 2, &tm->tm_min)) return NULL;
             break;
           case 's':
-            if (!parse_digits(&s, 2, &tm->tm_sec)) return NULL;
+            if (!parse_digitsv(&s, -1, &tm->tm_unixtime)) return NULL;
             break;
           case 'S':
             if (!parse_digits(&s, 2, &tm->tm_sec)) return NULL;
@@ -351,6 +388,7 @@ init_struct_strptime(struct strptime *tm) {
     tm->tm_year = Qnil;
     tm->tm_cent = Qnil;
     tm->tm_gmtoff = INT_MAX;
+    tm->tm_unixtime = Qnil;
     tm->tm_yy = -1;
     tm->tm_mon = -1;
     tm->tm_mday = -1;
@@ -365,24 +403,33 @@ init_struct_strptime(struct strptime *tm) {
     tm->tm_ampm = -1;
 }
 
-#define VTM_WDAY_INITVAL (7)
-#define VTM_ISDST_INITVAL (3)
-#define TIME_TZMODE_LOCALTIME 0
-#define TIME_TZMODE_UTC 1
-#define TIME_TZMODE_FIXOFF 2
-#define TIME_TZMODE_UNINITIALIZED 3
-
-int
-ruby_strptime(const char *restrict str, const char *restrict format,
-        struct vtm *restrict vtm) {
+VALUE rb_time_new_with_vtm(VALUE klass, struct vtm *vtm);
+VALUE
+ruby_strptime(const char *restrict str, const char *restrict format) {
+    struct vtm vtm;
     struct strptime tm;
-    int tzmode;
     init_struct_strptime(&tm);
+
     if (!ruby_strptime0(str, format, &tm)) {
-        return TIME_TZMODE_UNINITIALIZED;
+        return Qnil;
     }
+
+    fprintf(stderr, "%d: %04d-%02d-%02d %02d:%02d:%02d.%d %+06d %d\n",
+            __LINE__,
+            NIL_P(tm.tm_year) ? -1 : FIX2INT(tm.tm_year),
+            tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+            tm.tm_nsec, tm.tm_gmtoff,
+            NIL_P(tm.tm_unixtime) ? -1 : FIX2INT(tm.tm_unixtime));//*/
+
+    if (!NIL_P(tm.tm_unixtime)) {
+        struct timespec ts;
+        ts.tv_sec = NUM2TIMET(tm.tm_unixtime);
+        ts.tv_nsec = tm.tm_nsec != -1 ? tm.tm_nsec : 0;
+        return rb_time_timespec_new(&ts, tm.tm_gmtoff);
+    }
+
     if (!NIL_P(tm.tm_year)) {
-        vtm->year = tm.tm_year;
+        vtm.year = tm.tm_year;
     }
     else if (tm.tm_yy != -1) {
         VALUE v;
@@ -397,45 +444,43 @@ ruby_strptime(const char *restrict str, const char *restrict format,
             v = rb_big_mul(tm.tm_cent, rb_int2big(100));
             v = rb_big_plus(v, rb_int2big(tm.tm_yy));
         }
-        vtm->year = v;
+        vtm.year = v;
     }
     if (tm.tm_mon != -1) {
-        vtm->mon = tm.tm_mon;
+        vtm.mon = tm.tm_mon;
     }
     if (tm.tm_mday != -1) {
-        vtm->mday = tm.tm_mday;
+        vtm.mday = tm.tm_mday;
     }
     if (tm.tm_hour != -1) {
-        vtm->hour = tm.tm_hour;
+        vtm.hour = tm.tm_hour;
     }
     else if (tm.tm_hour12 != -1 && tm.tm_ampm != -1) {
-        vtm->hour = tm.tm_hour12 + tm.tm_ampm;
+        vtm.hour = tm.tm_hour12 + tm.tm_ampm;
     }
     if (tm.tm_min != -1) {
-        vtm->min = tm.tm_min;
+        vtm.min = tm.tm_min;
     }
     if (tm.tm_sec != -1) {
-        vtm->sec = tm.tm_sec;
+        vtm.sec = tm.tm_sec;
     }
     if (tm.tm_nsec != -1) {
-        vtm->subsecx = INT2FIX(tm.tm_nsec);
+        vtm.subsecx = INT2FIX(tm.tm_nsec);
     }
     else {
-        vtm->subsecx = INT2FIX(0);
+        vtm.subsecx = INT2FIX(0);
     }
     if (tm.tm_gmtoff == INT_MIN) {
-        vtm->utc_offset = INT2FIX(0);
-        tzmode = TIME_TZMODE_UTC;
+        vtm.utc_offset = UTC_ZONE;
     }
-    else if (tm.tm_gmtoff == INT_MAX) {
-        vtm->utc_offset = Qnil;
-        tzmode = TIME_TZMODE_LOCALTIME;
+    else if (tm.tm_gmtoff == INT_MAX) { /* localtime */
+        vtm.utc_offset = Qnil;
     }
     else {
-        vtm->utc_offset = INT2FIX(tm.tm_gmtoff);
-        tzmode = TIME_TZMODE_FIXOFF;
+        vtm.utc_offset = INT2FIX(tm.tm_gmtoff);
     }
-    vtm->wday = VTM_WDAY_INITVAL;
-    vtm->isdst = VTM_ISDST_INITVAL;
-    return tzmode;
+    vtm.wday = VTM_WDAY_INITVAL;
+    vtm.isdst = VTM_ISDST_INITVAL;
+    dump_vtm(&vtm);
+    return rb_time_new_with_vtm(rb_cTime, &vtm);
 }
