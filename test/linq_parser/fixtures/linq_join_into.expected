@@ -1,0 +1,1 @@
+[[:from, :u], [:join_into, :posts, :p, :g, 2, false], [:select, 2, [1, :g]]]

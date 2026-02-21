@@ -320,6 +320,15 @@ struct lex_context {
     unsigned int cant_return: 1;
     unsigned int in_alt_pattern: 1;
     unsigned int capture_in_pattern: 1;
+    unsigned int in_linq: 1;
+    unsigned int in_linq_expr: 1;
+    unsigned int linq_expect_in: 1;
+    unsigned int linq_clause_head: 1;
+    unsigned int linq_expect_order_dir: 1;
+    unsigned int linq_expect_join_on: 1;
+    unsigned int linq_expect_join_equals: 1;
+    unsigned int linq_expect_group_by: 1;
+    unsigned int linq_expect_into: 1;
 };
 
 typedef struct RNode_DEF_TEMP rb_node_def_temp_t;
@@ -343,6 +352,7 @@ RBIMPL_WARNING_POP()
 #endif
 
 #define TAB_WIDTH 8
+#define LINQ_MAX_RANGE_IDS 8
 
 #define yydebug (p->debug)	/* disable the global variable definition */
 
@@ -553,6 +563,8 @@ struct parser_params {
 
     int max_numparam;
     ID it_id;
+    ID linq_range_ids[LINQ_MAX_RANGE_IDS];
+    int linq_range_id_len;
 
     struct lex_context ctxt;
 
@@ -898,6 +910,22 @@ parser_token2char(struct parser_params *p, enum yytokentype tok)
       TOKEN2CHAR(keyword_redo);
       TOKEN2CHAR(keyword_retry);
       TOKEN2CHAR(keyword_in);
+      TOKEN2CHAR(keyword_from);
+      TOKEN2CHAR(keyword_join);
+      TOKEN2CHAR(keyword_group);
+      TOKEN2CHAR(keyword_by);
+      TOKEN2CHAR(keyword_into);
+      TOKEN2CHAR(keyword_on);
+      TOKEN2CHAR(keyword_equals);
+      TOKEN2CHAR(keyword_where);
+      TOKEN2CHAR(keyword_let);
+      TOKEN2CHAR(keyword_having);
+      TOKEN2CHAR(keyword_orderby);
+      TOKEN2CHAR(keyword_limit);
+      TOKEN2CHAR(keyword_offset);
+      TOKEN2CHAR(keyword_select);
+      TOKEN2CHAR(keyword_ascending);
+      TOKEN2CHAR(keyword_descending);
       TOKEN2CHAR(keyword_do);
       TOKEN2CHAR(keyword_do_cond);
       TOKEN2CHAR(keyword_do_block);
@@ -1426,6 +1454,11 @@ static NODE *call_bin_op(struct parser_params*,NODE*,ID,NODE*,const YYLTYPE*,con
 static NODE *call_uni_op(struct parser_params*,NODE*,ID,const YYLTYPE*,const YYLTYPE*);
 static NODE *new_qcall(struct parser_params* p, ID atype, NODE *recv, ID mid, NODE *args, const YYLTYPE *op_loc, const YYLTYPE *loc);
 static NODE *new_command_qcall(struct parser_params* p, ID atype, NODE *recv, ID mid, NODE *args, NODE *block, const YYLTYPE *op_loc, const YYLTYPE *loc);
+static void linq_reset_range_ids(struct parser_params *p);
+static void linq_push_range_id(struct parser_params *p, ID range_id, const YYLTYPE *loc);
+static void linq_bind_range_vars(struct parser_params *p);
+static rb_node_args_t *linq_block_args(struct parser_params *p, const YYLTYPE *loc);
+static NODE *linq_new_iter(struct parser_params *p, rb_node_args_t *args, NODE *body, const YYLTYPE *loc);
 static NODE *method_add_block(struct parser_params*p, NODE *m, NODE *b, const YYLTYPE *loc) {RNODE_ITER(b)->nd_iter = m; b->nd_loc = *loc; return b;}
 
 static bool args_info_empty_p(struct rb_args_info *args);
@@ -2713,6 +2746,22 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
         keyword_redo         "'redo'"
         keyword_retry        "'retry'"
         keyword_in           "'in'"
+        keyword_from         "'from'"
+        keyword_join         "'join'"
+        keyword_group        "'group'"
+        keyword_by           "'by'"
+        keyword_into         "'into'"
+        keyword_on           "'on'"
+        keyword_equals       "'equals'"
+        keyword_where        "'where'"
+        keyword_let          "'let'"
+        keyword_having       "'having'"
+        keyword_orderby      "'orderby'"
+        keyword_limit        "'limit'"
+        keyword_offset       "'offset'"
+        keyword_select       "'select'"
+        keyword_ascending    "'ascending'"
+        keyword_descending   "'descending'"
         keyword_do           "'do'"
         keyword_do_cond      "'do' for condition"
         keyword_do_block     "'do' for block"
@@ -2766,6 +2815,8 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <node_exits> block_open k_while k_until k_for allow_exits
 %type <node> top_stmts top_stmt begin_block endless_arg endless_command
 %type <node> bodystmt stmts stmt_or_begin stmt expr arg ternary primary
+%type <node> linq_query linq_chain linq_orderby_chain linq_in_expr_head linq_orderby_opts linq_order_dir
+%type <id>   linq_into_opt
 %type <node> command command_call command_call_value method_call
 %type <node> expr_value expr_value_do arg_value primary_value rel_expr
 %type <node_fcall> fcall
@@ -3444,6 +3495,7 @@ command_rhs	: command_call_value   %prec tOP_ASGN
                 ;
 
 expr		: command_call
+                | linq_query
                 | expr keyword_and expr
                     {
                         $$ = logop(p, idAND, $1, $3, &@2, &@$);
@@ -3495,6 +3547,251 @@ expr		: command_call
                     /*% ripper: case!($:arg, in!($:body, Qnil, Qnil)) %*/
                     }
                 | arg %prec tLBRACE_ARG
+                ;
+
+linq_query      : linq_chain keyword_select
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value
+                    {
+                        NODE *call = NEW_CALL($1, rb_intern("select"), 0, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $4, &@$);
+                        dyna_pop(p, $dyna);
+                        p->ctxt.in_linq = 0;
+                        p->ctxt.in_linq_expr = 0;
+                        p->ctxt.linq_expect_in = 0;
+                        p->ctxt.linq_clause_head = 0;
+                        p->ctxt.linq_expect_order_dir = 0;
+                        p->ctxt.linq_expect_join_on = 0;
+                        p->ctxt.linq_expect_join_equals = 0;
+                        p->ctxt.linq_expect_group_by = 0;
+                        p->ctxt.linq_expect_into = 0;
+                        linq_reset_range_ids(p);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                ;
+
+linq_in_expr_head : none
+                    {
+                        p->ctxt.linq_expect_in = 0;
+                        p->ctxt.in_linq_expr = 1;
+                        p->ctxt.linq_clause_head = 0;
+                        p->ctxt.linq_expect_order_dir = 0;
+                        p->ctxt.linq_expect_group_by = 0;
+                        p->ctxt.linq_expect_into = 0;
+                        $$ = 0;
+                    }
+                ;
+
+linq_order_dir  : keyword_ascending
+                    {
+                        ID id_asc = rb_intern_const("asc");
+                        $$ = NEW_LIST(NEW_SYM(rb_id2str(id_asc), &@1), &@1);
+                    }
+                | keyword_descending
+                    {
+                        ID id_desc = rb_intern_const("desc");
+                        $$ = NEW_LIST(NEW_SYM(rb_id2str(id_desc), &@1), &@1);
+                    }
+                ;
+
+linq_orderby_opts
+                : none
+                    {
+                        $$ = 0;
+                    }
+                | linq_order_dir
+                ;
+
+linq_orderby_chain
+                : linq_chain keyword_orderby
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value linq_orderby_opts
+                    {
+                        NODE *call = NEW_CALL($1, rb_intern("orderby"), $5, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $4, &@$);
+                        dyna_pop(p, $dyna);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_orderby_chain ','
+                    {
+                        p->ctxt.linq_expect_order_dir = 1;
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value linq_orderby_opts
+                    {
+                        NODE *call = NEW_CALL($1, rb_intern("thenby"), $5, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $4, &@$);
+                        dyna_pop(p, $dyna);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                ;
+
+linq_into_opt   : none
+                    {
+                        $$ = (ID)0;
+                    }
+                | keyword_into tIDENTIFIER
+                    {
+                        $$ = $2;
+                    }
+                ;
+
+linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_value terms?
+                    {
+                        NODE *from_args = NEW_LIST(NEW_SYM(rb_id2str($2), &@2), &@2);
+                        linq_reset_range_ids(p);
+                        linq_push_range_id(p, $2, &@2);
+                        $$ = NEW_CALL($5, rb_intern("from"), from_args, &@$);
+                    }
+                | linq_chain keyword_from tIDENTIFIER keyword_in linq_in_expr_head
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value terms?
+                    {
+                        NODE *from_args = NEW_LIST(NEW_SYM(rb_id2str($3), &@3), &@3);
+                        NODE *call = NEW_CALL($1, rb_intern("from_each"), from_args, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $7, &@$);
+                        dyna_pop(p, $dyna);
+                        linq_push_range_id(p, $3, &@3);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_chain keyword_join tIDENTIFIER keyword_in linq_in_expr_head arg_value
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                        arg_var(p, $3);
+                    }[dyna]<vars>
+                  keyword_on arg_value keyword_equals arg_value
+                    {
+                        p->ctxt.linq_expect_into = 1;
+                    }
+                  linq_into_opt[join_into] terms?
+                    {
+                        NODE *join_args = NEW_LIST($6, &@6);
+                        NODE *join_cond = call_bin_op(p, $9, idEq, $11, &@10, &@$);
+                        NODE *call;
+                        int saved_len = p->linq_range_id_len;
+                        if ($join_into) {
+                            join_args = list_append(p, join_args, NEW_SYM(rb_id2str($3), &@3));
+                            join_args = list_append(p, join_args, NEW_SYM(rb_id2str($join_into), &@join_into));
+                            call = NEW_CALL($1, rb_intern("join_into"), join_args, &@$);
+                            linq_push_range_id(p, $3, &@3);
+                        }
+                        else {
+                            call = NEW_CALL($1, rb_intern("join"), join_args, &@$);
+                            linq_push_range_id(p, $3, &@3);
+                        }
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, join_cond, &@$);
+                        dyna_pop(p, $dyna);
+                        p->ctxt.linq_expect_into = 0;
+                        if ($join_into) {
+                            p->linq_range_id_len = saved_len;
+                            linq_push_range_id(p, $join_into, &@join_into);
+                        }
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_chain keyword_where
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value terms?
+                    {
+                        NODE *call = NEW_CALL($1, rb_intern("where"), 0, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $4, &@$);
+                        dyna_pop(p, $dyna);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_chain keyword_let tIDENTIFIER '='
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value terms?
+                    {
+                        NODE *let_args = NEW_LIST(NEW_SYM(rb_id2str($3), &@3), &@3);
+                        NODE *call = NEW_CALL($1, rb_intern("let"), let_args, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $6, &@$);
+                        dyna_pop(p, $dyna);
+                        linq_push_range_id(p, $3, &@3);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_chain keyword_group
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value[group_item] keyword_by arg_value[group_key]
+                    {
+                        p->ctxt.linq_expect_into = 1;
+                    }
+                  linq_into_opt[group_into] terms?
+                    {
+                        NODE *pair = list_append(p, NEW_LIST($group_item, &@group_item), $group_key);
+                        NODE *call;
+                        ID group_into_id = $group_into;
+                        if (group_into_id) {
+                            NODE *group_args = NEW_LIST(NEW_SYM(rb_id2str(group_into_id), &@group_into), &@group_into);
+                            call = NEW_CALL($1, rb_intern("group_into"), group_args, &@$);
+                        }
+                        else {
+                            call = NEW_CALL($1, rb_intern("group"), 0, &@$);
+                        }
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, pair, &@$);
+                        dyna_pop(p, $dyna);
+                        p->ctxt.linq_expect_into = 0;
+                        if (group_into_id) {
+                            linq_reset_range_ids(p);
+                            linq_push_range_id(p, group_into_id, &@group_into);
+                        }
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_chain keyword_having
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                    }[dyna]<vars>
+                  arg_value terms?
+                    {
+                        NODE *call = NEW_CALL($1, rb_intern("having"), 0, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, $4, &@$);
+                        dyna_pop(p, $dyna);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_orderby_chain terms?
+                    {
+                        $$ = $1;
+                    }
+                | linq_chain keyword_limit
+                  arg_value terms?
+                    {
+                        NODE *limit_args = NEW_LIST($3, &@3);
+                        $$ = NEW_CALL($1, rb_intern("limit"), limit_args, &@$);
+                    }
+                | linq_chain keyword_offset
+                  arg_value terms?
+                    {
+                        NODE *offset_args = NEW_LIST($3, &@3);
+                        $$ = NEW_CALL($1, rb_intern("offset"), offset_args, &@$);
+                    }
                 ;
 
 def_name	: fname
@@ -3912,7 +4209,9 @@ reswords	: keyword__LINE__ | keyword__FILE__ | keyword__ENCODING__
                 | keyword_break | keyword_case | keyword_class | keyword_def
                 | keyword_defined | keyword_do | keyword_else | keyword_elsif
                 | keyword_end | keyword_ensure | keyword_false
-                | keyword_for | keyword_in | keyword_module | keyword_next
+                | keyword_for | keyword_in | keyword_from | keyword_join | keyword_group | keyword_by | keyword_into | keyword_on | keyword_equals | keyword_where | keyword_let | keyword_having | keyword_orderby | keyword_limit | keyword_offset | keyword_select
+                | keyword_ascending | keyword_descending
+                | keyword_module | keyword_next
                 | keyword_nil | keyword_not | keyword_or | keyword_redo
                 | keyword_rescue | keyword_retry | keyword_return | keyword_self
                 | keyword_super | keyword_then | keyword_true | keyword_undef
@@ -7028,6 +7327,254 @@ static inline int
 parser_isascii(struct parser_params *p)
 {
     return ISASCII(*(p->lex.pcur-1));
+}
+
+static bool
+linq_from_clause_head_p(struct parser_params *p)
+{
+    const char *ptr = p->lex.pcur;
+
+    while (!lex_eol_ptr_p(p, ptr) && ISSPACE((unsigned char)*ptr)) ptr++;
+    if (lex_eol_ptr_p(p, ptr)) return false;
+    if (!is_identchar(p, ptr, p->lex.pend, p->enc)) return false;
+
+    do {
+        ptr++;
+    } while (!lex_eol_ptr_p(p, ptr) && is_identchar(p, ptr, p->lex.pend, p->enc));
+
+    while (!lex_eol_ptr_p(p, ptr) && ISSPACE((unsigned char)*ptr)) ptr++;
+    if (lex_eol_ptr_n_p(p, ptr, 1)) return false;
+    if (ptr[0] != 'i' || ptr[1] != 'n') return false;
+    ptr += 2;
+    if (lex_eol_ptr_p(p, ptr)) return true;
+    return !is_identchar(p, ptr, p->lex.pend, p->enc);
+}
+
+static enum yytokentype
+linq_contextual_keyword(struct parser_params *p, ID ident, enum yytokentype result, enum lex_state_e last_state)
+{
+    static ID id_from;
+    static ID id_join;
+    static ID id_group;
+    static ID id_by;
+    static ID id_into;
+    static ID id_on;
+    static ID id_equals;
+    static ID id_where;
+    static ID id_let;
+    static ID id_having;
+    static ID id_orderby;
+    static ID id_limit;
+    static ID id_offset;
+    static ID id_select;
+    static ID id_ascending;
+    static ID id_descending;
+
+    if (result != tIDENTIFIER) return result;
+
+    if (!id_from) {
+        id_from = rb_intern_const("from");
+        id_join = rb_intern_const("join");
+        id_group = rb_intern_const("group");
+        id_by = rb_intern_const("by");
+        id_into = rb_intern_const("into");
+        id_on = rb_intern_const("on");
+        id_equals = rb_intern_const("equals");
+        id_where = rb_intern_const("where");
+        id_let = rb_intern_const("let");
+        id_having = rb_intern_const("having");
+        id_orderby = rb_intern_const("orderby");
+        id_limit = rb_intern_const("limit");
+        id_offset = rb_intern_const("offset");
+        id_select = rb_intern_const("select");
+        id_ascending = rb_intern_const("ascending");
+        id_descending = rb_intern_const("descending");
+    }
+
+    if (!p->ctxt.in_linq && ident == id_from && linq_from_clause_head_p(p)) {
+        p->ctxt.in_linq = 1;
+        p->ctxt.in_linq_expr = 0;
+        p->ctxt.linq_expect_in = 1;
+        p->ctxt.linq_clause_head = 0;
+        p->ctxt.linq_expect_order_dir = 0;
+        p->ctxt.linq_expect_join_on = 0;
+        p->ctxt.linq_expect_join_equals = 0;
+        p->ctxt.linq_expect_group_by = 0;
+        p->ctxt.linq_expect_into = 0;
+        SET_LEX_STATE(EXPR_VALUE);
+        return keyword_from;
+    }
+
+    if (p->ctxt.in_linq && p->ctxt.in_linq_expr && IS_lex_state_for(last_state, EXPR_END_ANY)) {
+        p->ctxt.in_linq_expr = 0;
+    }
+
+    if (p->ctxt.in_linq && p->ctxt.linq_expect_join_on && !p->ctxt.in_linq_expr &&
+        IS_lex_state_for(last_state, EXPR_END_ANY) && ident == id_on) {
+        p->ctxt.linq_expect_join_on = 0;
+        p->ctxt.linq_expect_join_equals = 1;
+        p->ctxt.linq_clause_head = 0;
+        p->ctxt.in_linq_expr = 1;
+        SET_LEX_STATE(EXPR_VALUE);
+        return keyword_on;
+    }
+    if (p->ctxt.in_linq && p->ctxt.linq_expect_join_equals && !p->ctxt.in_linq_expr &&
+        IS_lex_state_for(last_state, EXPR_END_ANY) && ident == id_equals) {
+        p->ctxt.linq_expect_join_equals = 0;
+        p->ctxt.linq_clause_head = 0;
+        p->ctxt.in_linq_expr = 1;
+        p->ctxt.linq_expect_into = 1;
+        SET_LEX_STATE(EXPR_VALUE);
+        return keyword_equals;
+    }
+    if (p->ctxt.in_linq && p->ctxt.linq_expect_group_by && !p->ctxt.in_linq_expr &&
+        IS_lex_state_for(last_state, EXPR_END_ANY) && ident == id_by) {
+        p->ctxt.linq_expect_group_by = 0;
+        p->ctxt.linq_clause_head = 0;
+        p->ctxt.in_linq_expr = 1;
+        p->ctxt.linq_expect_into = 1;
+        SET_LEX_STATE(EXPR_VALUE);
+        return keyword_by;
+    }
+    if (p->ctxt.in_linq && p->ctxt.linq_expect_into && !p->ctxt.in_linq_expr &&
+        (p->ctxt.linq_clause_head || IS_lex_state_for(last_state, EXPR_END_ANY)) &&
+        ident == id_into) {
+        p->ctxt.linq_expect_into = 0;
+        p->ctxt.linq_clause_head = 0;
+        SET_LEX_STATE(EXPR_VALUE);
+        return keyword_into;
+    }
+
+    if (p->ctxt.in_linq && !p->ctxt.in_linq_expr &&
+        (p->ctxt.linq_clause_head || IS_lex_state_for(last_state, EXPR_END_ANY))) {
+        if (p->ctxt.linq_expect_order_dir && ident == id_ascending) {
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_clause_head = 0;
+            SET_LEX_STATE(EXPR_END);
+            return keyword_ascending;
+        }
+        if (p->ctxt.linq_expect_order_dir && ident == id_descending) {
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_clause_head = 0;
+            SET_LEX_STATE(EXPR_END);
+            return keyword_descending;
+        }
+        if (ident == id_where) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_where;
+        }
+        if (ident == id_from) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.linq_expect_in = 1;
+            p->ctxt.in_linq_expr = 0;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_from;
+        }
+        if (ident == id_let) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_let;
+        }
+        if (ident == id_having) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_having;
+        }
+        if (ident == id_join) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 1;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 1;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_join;
+        }
+        if (ident == id_group) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 1;
+            p->ctxt.linq_expect_into = 1;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_group;
+        }
+        if (ident == id_orderby) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 1;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_orderby;
+        }
+        if (ident == id_limit) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_limit;
+        }
+        if (ident == id_offset) {
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.in_linq_expr = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_offset;
+        }
+        if (ident == id_select) {
+            p->ctxt.in_linq = 0;
+            p->ctxt.in_linq_expr = 0;
+            p->ctxt.linq_expect_in = 0;
+            p->ctxt.linq_clause_head = 0;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+            p->ctxt.linq_expect_into = 0;
+            SET_LEX_STATE(EXPR_VALUE);
+            return keyword_select;
+        }
+    }
+
+    return result;
 }
 
 static void
@@ -10419,6 +10966,16 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
             if (IS_lex_state(EXPR_BEG)) {
                 p->command_start = TRUE;
             }
+            if (kw->id[0] == keyword_in && p->ctxt.in_linq && p->ctxt.linq_expect_in) {
+                p->ctxt.linq_expect_in = 0;
+                p->ctxt.in_linq_expr = 1;
+                p->ctxt.linq_clause_head = 0;
+                p->ctxt.linq_expect_order_dir = 0;
+                p->ctxt.linq_expect_join_on = 0;
+                p->ctxt.linq_expect_join_equals = 0;
+                p->ctxt.linq_expect_group_by = 0;
+                p->ctxt.linq_expect_into = 0;
+            }
             if (kw->id[0] == keyword_do) {
                 if (lambda_beginning_p()) {
                     p->lex.lpar_beg = -1; /* make lambda_beginning_p() == FALSE in the body of "-> do ... end" */
@@ -10440,7 +10997,12 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
     }
 
     if (IS_lex_state(EXPR_BEG_ANY | EXPR_ARG_ANY | EXPR_DOT)) {
-        if (cmd_state) {
+        if (p->ctxt.in_linq && p->ctxt.in_linq_expr && !IS_lex_state(EXPR_DOT)) {
+            /* Avoid command-form parsing in LINQ expressions so clause keywords
+             * like "where"/"select" can follow without a newline. */
+            SET_LEX_STATE(EXPR_END);
+        }
+        else if (cmd_state) {
             SET_LEX_STATE(EXPR_CMDARG);
         }
         else {
@@ -10461,6 +11023,7 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
         (lvar_defined(p, ident) || NUMPARAM_ID_P(ident))) {
         SET_LEX_STATE(EXPR_END|EXPR_LABEL);
     }
+    result = linq_contextual_keyword(p, ident, result, last_state);
     return result;
 }
 
@@ -10635,6 +11198,14 @@ parser_yylex(struct parser_params *p)
       normal_newline:
         p->command_start = TRUE;
         SET_LEX_STATE(EXPR_BEG);
+        if (p->ctxt.in_linq) {
+            p->ctxt.in_linq_expr = 0;
+            p->ctxt.linq_clause_head = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+        }
         return '\n';
 
       case '*':
@@ -11078,6 +11649,14 @@ parser_yylex(struct parser_params *p)
       case ';':
         SET_LEX_STATE(EXPR_BEG);
         p->command_start = TRUE;
+        if (p->ctxt.in_linq) {
+            p->ctxt.in_linq_expr = 0;
+            p->ctxt.linq_clause_head = 1;
+            p->ctxt.linq_expect_order_dir = 0;
+            p->ctxt.linq_expect_join_on = 0;
+            p->ctxt.linq_expect_join_equals = 0;
+            p->ctxt.linq_expect_group_by = 0;
+        }
         return ';';
 
       case ',':
@@ -11528,6 +12107,68 @@ rb_node_iter_new(struct parser_params *p, rb_node_args_t *nd_args, NODE *nd_body
     n->nd_iter = 0;
 
     return n;
+}
+
+static void
+linq_reset_range_ids(struct parser_params *p)
+{
+    p->linq_range_id_len = 0;
+}
+
+static void
+linq_push_range_id(struct parser_params *p, ID range_id, const YYLTYPE *loc)
+{
+    int i;
+    for (i = 0; i < p->linq_range_id_len; i++) {
+        if (p->linq_range_ids[i] == range_id) return;
+    }
+
+    if (p->linq_range_id_len >= LINQ_MAX_RANGE_IDS) {
+        yyerror1(loc, "too many range variables in LINQ query");
+        return;
+    }
+
+    p->linq_range_ids[p->linq_range_id_len++] = range_id;
+}
+
+static void
+linq_bind_range_vars(struct parser_params *p)
+{
+    int i;
+    for (i = 0; i < p->linq_range_id_len; i++) {
+        arg_var(p, p->linq_range_ids[i]);
+    }
+}
+
+static rb_node_args_t *
+linq_block_args(struct parser_params *p, const YYLTYPE *loc)
+{
+    rb_node_args_aux_t *pre_args = 0;
+    if (p->linq_range_id_len > 0) {
+        pre_args = NEW_ARGS_AUX(0, p->linq_range_id_len, loc);
+    }
+    return new_args(p, pre_args, 0, 0, 0, new_args_tail(p, 0, 0, 0, loc), loc);
+}
+
+static NODE *
+linq_new_iter(struct parser_params *p, rb_node_args_t *args, NODE *body, const YYLTYPE *loc)
+{
+    rb_ast_id_table_t *tbl = 0;
+    int i;
+
+    if (p->linq_range_id_len > 0) {
+        tbl = rb_ast_new_local_table(p->ast, p->linq_range_id_len);
+        for (i = 0; i < p->linq_range_id_len; i++) {
+            tbl->ids[i] = p->linq_range_ids[i];
+        }
+    }
+
+    NODE *scope = NEW_SCOPE2(tbl, args, body, NULL, loc);
+    rb_node_iter_t *n = NODE_NEWNODE(NODE_ITER, rb_node_iter_t, loc);
+    RNODE_SCOPE(scope)->nd_parent = &n->node;
+    n->nd_body = scope;
+    n->nd_iter = 0;
+    return (NODE *)n;
 }
 
 static rb_node_lambda_t *
