@@ -1,1 +1,1 @@
-[[:from, :u], [:group, [1, 11]], [:having, true], [:select, 1]]
+[[:from, :u], [:group_into, :g, [1, 11]], [:having, true], [:select, {key: 11, items: [1]}]]

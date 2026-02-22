@@ -1460,6 +1460,7 @@ static void linq_push_range_id(struct parser_params *p, ID range_id, const YYLTY
 static void linq_bind_range_vars(struct parser_params *p);
 static rb_node_args_t *linq_block_args(struct parser_params *p, const YYLTYPE *loc);
 static NODE *linq_new_iter(struct parser_params *p, rb_node_args_t *args, NODE *body, const YYLTYPE *loc);
+static void linq_finish_context(struct parser_params *p);
 static NODE *method_add_block(struct parser_params*p, NODE *m, NODE *b, const YYLTYPE *loc) {RNODE_ITER(b)->nd_iter = m; b->nd_loc = *loc; return b;}
 
 static bool args_info_empty_p(struct rb_args_info *args);
@@ -2819,6 +2820,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <node> bodystmt stmts stmt_or_begin stmt expr arg ternary primary linq_primary
 %type <node> linq_query linq_chain linq_orderby_chain linq_in_expr_head linq_orderby_opts linq_order_dir
 %type <id>   linq_into_opt
+%type <vars> linq_group_head
 %type <node> command command_call command_call_value method_call
 %type <node> expr_value expr_value_do arg_value primary_value rel_expr
 %type <node_fcall> fcall
@@ -2928,7 +2930,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %nonassoc tLOWEST
 %nonassoc tLBRACE_ARG
 
-%nonassoc  modifier_if modifier_unless modifier_while modifier_until keyword_in
+%nonassoc  modifier_if modifier_unless modifier_while modifier_until keyword_in keyword_into
 %left  keyword_or keyword_and
 %right keyword_not
 %nonassoc keyword_defined
@@ -3563,16 +3565,22 @@ linq_query      : linq_chain keyword_select
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
                         dyna_pop(p, $dyna);
-                        p->ctxt.in_linq = 0;
-                        p->ctxt.in_linq_expr = 0;
-                        p->ctxt.linq_expect_in = 0;
-                        p->ctxt.linq_clause_head = 0;
-                        p->ctxt.linq_expect_order_dir = 0;
-                        p->ctxt.linq_expect_join_on = 0;
-                        p->ctxt.linq_expect_join_equals = 0;
-                        p->ctxt.linq_expect_group_by = 0;
+                        linq_finish_context(p);
+                        $$ = method_add_block(p, call, block, &@$);
+                    }
+                | linq_chain linq_group_head[dyna]
+                  arg[group_item] keyword_by arg[group_key]
+                  %prec tLOWEST
+                    {
+                        value_expr(p, $3);
+                        value_expr(p, $5);
+                        NODE *pair = list_append(p, NEW_LIST($3, &@group_item), $5);
+                        NODE *call = NEW_CALL($1, rb_intern("group"), 0, &@$);
+                        rb_node_args_t *args = linq_block_args(p, &@2);
+                        NODE *block = linq_new_iter(p, args, pair, &@$);
+                        dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
-                        linq_reset_range_ids(p);
+                        linq_finish_context(p);
                         $$ = method_add_block(p, call, block, &@$);
                     }
                 ;
@@ -3586,6 +3594,14 @@ linq_in_expr_head : none
                         p->ctxt.linq_expect_group_by = 0;
                         p->ctxt.linq_expect_into = 0;
                         $$ = 0;
+                    }
+                ;
+
+linq_group_head : keyword_group
+                    {
+                        $$ = dyna_push(p);
+                        linq_bind_range_vars(p);
+                        p->ctxt.linq_expect_into = 1;
                     }
                 ;
 
@@ -3735,35 +3751,21 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         linq_push_range_id(p, $3, &@3);
                         $$ = method_add_block(p, call, block, &@$);
                     }
-                | linq_chain keyword_group
+                | linq_chain linq_group_head[dyna]
+                  arg[group_item] keyword_by arg[group_key]
+                  keyword_into tIDENTIFIER[group_into] terms?
                     {
-                        $$ = dyna_push(p);
-                        linq_bind_range_vars(p);
-                    }[dyna]<vars>
-                  arg_value[group_item] keyword_by arg_value[group_key]
-                    {
-                        p->ctxt.linq_expect_into = 1;
-                    }
-                  linq_into_opt[group_into] terms?
-                    {
-                        NODE *pair = list_append(p, NEW_LIST($group_item, &@group_item), $group_key);
-                        NODE *call;
-                        ID group_into_id = $group_into;
-                        if (group_into_id) {
-                            NODE *group_args = NEW_LIST(NEW_SYM(rb_id2str(group_into_id), &@group_into), &@group_into);
-                            call = NEW_CALL($1, rb_intern("group_into"), group_args, &@$);
-                        }
-                        else {
-                            call = NEW_CALL($1, rb_intern("group"), 0, &@$);
-                        }
+                        value_expr(p, $3);
+                        value_expr(p, $5);
+                        NODE *pair = list_append(p, NEW_LIST($3, &@group_item), $5);
+                        NODE *group_args = NEW_LIST(NEW_SYM(rb_id2str($group_into), &@group_into), &@group_into);
+                        NODE *call = NEW_CALL($1, rb_intern("group_into"), group_args, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, pair, &@$);
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
-                        if (group_into_id) {
-                            linq_reset_range_ids(p);
-                            linq_push_range_id(p, group_into_id, &@group_into);
-                        }
+                        linq_reset_range_ids(p);
+                        linq_push_range_id(p, $group_into, &@group_into);
                         $$ = method_add_block(p, call, block, &@$);
                     }
                 | linq_chain keyword_having
@@ -12176,6 +12178,21 @@ linq_new_iter(struct parser_params *p, rb_node_args_t *args, NODE *body, const Y
     n->nd_body = scope;
     n->nd_iter = 0;
     return (NODE *)n;
+}
+
+static void
+linq_finish_context(struct parser_params *p)
+{
+    p->ctxt.in_linq = 0;
+    p->ctxt.in_linq_expr = 0;
+    p->ctxt.linq_expect_in = 0;
+    p->ctxt.linq_clause_head = 0;
+    p->ctxt.linq_expect_order_dir = 0;
+    p->ctxt.linq_expect_join_on = 0;
+    p->ctxt.linq_expect_join_equals = 0;
+    p->ctxt.linq_expect_group_by = 0;
+    p->ctxt.linq_expect_into = 0;
+    linq_reset_range_ids(p);
 }
 
 static rb_node_lambda_t *

@@ -10,8 +10,7 @@ def q.group(&b)
   self
 end
 
-query = from u in q
-group u by u + 10
+query = from u in q group u by u + 10
 
 p query.equal?(q)
 p q.instance_variable_get(:@calls)
