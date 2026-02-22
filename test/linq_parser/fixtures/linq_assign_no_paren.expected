@@ -1,0 +1,2 @@
+true
+[[:from, :u], [:where, true], [:select, 1]]

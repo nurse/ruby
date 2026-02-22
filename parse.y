@@ -911,6 +911,7 @@ parser_token2char(struct parser_params *p, enum yytokentype tok)
       TOKEN2CHAR(keyword_retry);
       TOKEN2CHAR(keyword_in);
       TOKEN2CHAR(keyword_from);
+      TOKEN2CHAR(keyword_from_clause);
       TOKEN2CHAR(keyword_join);
       TOKEN2CHAR(keyword_group);
       TOKEN2CHAR(keyword_by);
@@ -2747,6 +2748,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
         keyword_retry        "'retry'"
         keyword_in           "'in'"
         keyword_from         "'from'"
+        keyword_from_clause  "'from' clause"
         keyword_join         "'join'"
         keyword_group        "'group'"
         keyword_by           "'by'"
@@ -2814,7 +2816,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <node_def_temp> defn_head defs_head k_def
 %type <node_exits> block_open k_while k_until k_for allow_exits
 %type <node> top_stmts top_stmt begin_block endless_arg endless_command
-%type <node> bodystmt stmts stmt_or_begin stmt expr arg ternary primary
+%type <node> bodystmt stmts stmt_or_begin stmt expr arg ternary primary linq_primary
 %type <node> linq_query linq_chain linq_orderby_chain linq_in_expr_head linq_orderby_opts linq_order_dir
 %type <id>   linq_into_opt
 %type <node> command command_call command_call_value method_call
@@ -3495,7 +3497,6 @@ command_rhs	: command_call_value   %prec tOP_ASGN
                 ;
 
 expr		: command_call
-                | linq_query
                 | expr keyword_and expr
                     {
                         $$ = logop(p, idAND, $1, $3, &@2, &@$);
@@ -3554,8 +3555,10 @@ linq_query      : linq_chain keyword_select
                         $$ = dyna_push(p);
                         linq_bind_range_vars(p);
                     }[dyna]<vars>
-                  arg_value
+                  arg
+                  %prec tLOWEST
                     {
+                        value_expr(p, $4);
                         NODE *call = NEW_CALL($1, rb_intern("select"), 0, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
@@ -3653,7 +3656,7 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         linq_push_range_id(p, $2, &@2);
                         $$ = NEW_CALL($5, rb_intern("from"), from_args, &@$);
                     }
-                | linq_chain keyword_from tIDENTIFIER keyword_in linq_in_expr_head
+                | linq_chain keyword_from_clause tIDENTIFIER keyword_in linq_in_expr_head
                     {
                         $$ = dyna_push(p);
                         linq_bind_range_vars(p);
@@ -4662,7 +4665,11 @@ mrhs		: args ',' arg_value
                 | qsymbols
                 ;
 
-primary		: inline_primary
+primary		: linq_query
+                | linq_primary
+                ;
+
+linq_primary	: inline_primary
             | var_ref
             | backref
             | tFID
@@ -5002,7 +5009,7 @@ primary		: inline_primary
                 }
             ;
 
-primary_value	: value_expr(primary)
+primary_value	: value_expr(linq_primary)
                 ;
 
 k_begin		: keyword_begin
@@ -7480,7 +7487,7 @@ linq_contextual_keyword(struct parser_params *p, ID ident, enum yytokentype resu
             p->ctxt.linq_expect_group_by = 0;
             p->ctxt.linq_expect_into = 0;
             SET_LEX_STATE(EXPR_VALUE);
-            return keyword_from;
+            return keyword_from_clause;
         }
         if (ident == id_let) {
             p->ctxt.linq_clause_head = 0;
