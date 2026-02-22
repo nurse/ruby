@@ -585,6 +585,7 @@ struct parser_params {
     unsigned int has_shebang: 1;
     unsigned int token_seen: 1;
     unsigned int token_info_enabled: 1;
+    unsigned int linq_allow_having: 1;
 # if WARN_PAST_SCOPE
     unsigned int past_scope_enabled: 1;
 # endif
@@ -3580,6 +3581,7 @@ linq_query      : linq_chain keyword_select
                         NODE *block = linq_new_iter(p, args, pair, &@$);
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
+                        p->linq_allow_having = 0;
                         linq_finish_context(p);
                         $$ = method_add_block(p, call, block, &@$);
                     }
@@ -3684,6 +3686,7 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $7, &@$);
                         dyna_pop(p, $dyna);
+                        p->linq_allow_having = 0;
                         linq_push_range_id(p, $3, &@3);
                         $$ = method_add_block(p, call, block, &@$);
                     }
@@ -3717,6 +3720,7 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         NODE *block = linq_new_iter(p, args, join_cond, &@$);
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
+                        p->linq_allow_having = 0;
                         if ($join_into) {
                             p->linq_range_id_len = saved_len;
                             linq_push_range_id(p, $join_into, &@join_into);
@@ -3734,6 +3738,7 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
                         dyna_pop(p, $dyna);
+                        p->linq_allow_having = 0;
                         $$ = method_add_block(p, call, block, &@$);
                     }
                 | linq_chain keyword_let tIDENTIFIER '='
@@ -3748,6 +3753,7 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $6, &@$);
                         dyna_pop(p, $dyna);
+                        p->linq_allow_having = 0;
                         linq_push_range_id(p, $3, &@3);
                         $$ = method_add_block(p, call, block, &@$);
                     }
@@ -3764,12 +3770,16 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         NODE *block = linq_new_iter(p, args, pair, &@$);
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
+                        p->linq_allow_having = 1;
                         linq_reset_range_ids(p);
                         linq_push_range_id(p, $group_into, &@group_into);
                         $$ = method_add_block(p, call, block, &@$);
                     }
                 | linq_chain keyword_having
                     {
+                        if (!p->linq_allow_having) {
+                            yyerror1(&@2, "LINQ 'having' must appear right after 'group ... into ...'");
+                        }
                         $$ = dyna_push(p);
                         linq_bind_range_vars(p);
                     }[dyna]<vars>
@@ -3779,22 +3789,26 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
                         dyna_pop(p, $dyna);
+                        p->linq_allow_having = 0;
                         $$ = method_add_block(p, call, block, &@$);
                     }
                 | linq_orderby_chain terms?
                     {
+                        p->linq_allow_having = 0;
                         $$ = $1;
                     }
                 | linq_chain keyword_limit
                   arg_value terms?
                     {
                         NODE *limit_args = NEW_LIST($3, &@3);
+                        p->linq_allow_having = 0;
                         $$ = NEW_CALL($1, rb_intern("limit"), limit_args, &@$);
                     }
                 | linq_chain keyword_offset
                   arg_value terms?
                     {
                         NODE *offset_args = NEW_LIST($3, &@3);
+                        p->linq_allow_having = 0;
                         $$ = NEW_CALL($1, rb_intern("offset"), offset_args, &@$);
                     }
                 ;
@@ -7410,6 +7424,7 @@ linq_contextual_keyword(struct parser_params *p, ID ident, enum yytokentype resu
         p->ctxt.linq_expect_join_equals = 0;
         p->ctxt.linq_expect_group_by = 0;
         p->ctxt.linq_expect_into = 0;
+        p->linq_allow_having = 0;
         SET_LEX_STATE(EXPR_VALUE);
         return keyword_from;
     }
@@ -7578,6 +7593,7 @@ linq_contextual_keyword(struct parser_params *p, ID ident, enum yytokentype resu
             p->ctxt.linq_expect_join_equals = 0;
             p->ctxt.linq_expect_group_by = 0;
             p->ctxt.linq_expect_into = 0;
+            p->linq_allow_having = 0;
             SET_LEX_STATE(EXPR_VALUE);
             return keyword_select;
         }
@@ -12192,6 +12208,7 @@ linq_finish_context(struct parser_params *p)
     p->ctxt.linq_expect_join_equals = 0;
     p->ctxt.linq_expect_group_by = 0;
     p->ctxt.linq_expect_into = 0;
+    p->linq_allow_having = 0;
     linq_reset_range_ids(p);
 }
 
