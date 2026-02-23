@@ -341,6 +341,9 @@ used.
 
 The +for+ loop is rarely used in modern ruby programs.
 
+For query-style expression composition, see
+{Query Expressions}[rdoc-ref:syntax/query_expressions.rdoc].
+
 == Modifier +while+ and +until+
 
 Like +if+ and +unless+, +while+ and +until+ can be used as modifiers:

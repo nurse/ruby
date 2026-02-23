@@ -14,6 +14,9 @@ Assignment[rdoc-ref:syntax/assignment.rdoc] ::
 {Control Expressions}[rdoc-ref:syntax/control_expressions.rdoc] ::
   +if+, +unless+, +while+, +until+, +for+, +break+, +next+, +redo+
 
+{Query Expressions}[rdoc-ref:syntax/query_expressions.rdoc] ::
+  +from ... in ...+ query syntax and clause composition rules
+
 {Pattern matching}[rdoc-ref:syntax/pattern_matching.rdoc] ::
   Structural pattern matching and variable binding syntax
 

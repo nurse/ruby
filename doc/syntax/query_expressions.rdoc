@@ -1,0 +1,64 @@
+= Query Expressions
+
+Ruby supports LINQ-style query expressions that start with:
+
+  from <identifier> in <expression>
+
+Query expressions are expressions (not statements), so they can be assigned,
+passed as method arguments, and chained with terminal methods.
+
+== Basic Form
+
+A typical form is:
+
+  query = from u in users
+  where u.active
+  select u.id
+
+Single-line form is also valid:
+
+  query = from u in users where u.active select u.id
+
+== Clauses
+
+The current clause set is:
+
+* +from+
+* +where+
+* +join ... on ... equals ...+
+* +join ... on ... equals ... into ...+
+* +let+
+* +group ... by ...+
+* +group ... by ... into ...+
+* +having+
+* +orderby ... [ascending|descending]+
+* +limit+
+* +offset+
+* +select+
+
+== Termination
+
+The query body must end with +select+ or +group+.
+
+The query expression boundary then follows normal Ruby expression termination
+rules (newline, +;+, +)+, etc.).
+
+== Ambiguity Handling
+
+Clause words are parsed as contextual keywords only inside a query expression.
+
+The parser only starts query-expression parsing when it can match:
+
+  from <identifier> in <expression>
+
+Otherwise, +from+, +where+, +select+, etc. continue to be parsed as regular
+method names or identifiers.
+
+This keeps compatibility with existing Ruby code that already uses those names.
+
+== Current Grammar Constraints
+
+Current reference grammar also enforces:
+
+* +having+ is allowed only immediately after +group ... into ...+
+* +having+ may appear at most once in a query expression
