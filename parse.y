@@ -1313,6 +1313,7 @@ static rb_node_error_t *rb_node_error_new(struct parser_params *p, const YYLTYPE
 enum internal_node_type {
     NODE_INTERNAL_ONLY = NODE_LAST,
     NODE_DEF_TEMP,
+    NODE_LINQ_CHAIN,
     NODE_EXITS,
     NODE_INTERNAL_LAST
 };
@@ -1323,6 +1324,8 @@ parser_node_name(int node)
     switch (node) {
       case NODE_DEF_TEMP:
         return "NODE_DEF_TEMP";
+      case NODE_LINQ_CHAIN:
+        return "NODE_LINQ_CHAIN";
       case NODE_EXITS:
         return "NODE_EXITS";
       default:
@@ -1347,6 +1350,16 @@ struct RNode_DEF_TEMP {
 };
 
 #define RNODE_DEF_TEMP(node) ((struct RNode_DEF_TEMP *)(node))
+
+struct RNode_LINQ_CHAIN {
+    NODE node;
+    NODE *legacy;
+    NODE *root_source;
+    ID root_range;
+    NODE *clauses;
+};
+
+#define RNODE_LINQ_CHAIN(node) ((struct RNode_LINQ_CHAIN *)(node))
 
 static rb_node_break_t *rb_node_break_new(struct parser_params *p, NODE *nd_stts, const YYLTYPE *loc, const YYLTYPE *keyword_loc);
 static rb_node_next_t *rb_node_next_new(struct parser_params *p, NODE *nd_stts, const YYLTYPE *loc, const YYLTYPE *keyword_loc);
@@ -1462,6 +1475,28 @@ static void linq_bind_range_vars(struct parser_params *p);
 static rb_node_args_t *linq_block_args(struct parser_params *p, const YYLTYPE *loc);
 static NODE *linq_new_iter(struct parser_params *p, rb_node_args_t *args, NODE *body, const YYLTYPE *loc);
 static void linq_finish_context(struct parser_params *p);
+static NODE *linq_chain_new(struct parser_params *p, NODE *legacy, NODE *root_source, ID root_range);
+static NODE *linq_chain_legacy(NODE *chain);
+static NODE *linq_chain_set_legacy(NODE *chain, NODE *legacy);
+static NODE *linq_chain_append_clause(struct parser_params *p, NODE *chain, NODE *clause);
+static NODE *linq_chain_build_runtime_query_call(struct parser_params *p, NODE *chain, const YYLTYPE *loc);
+static NODE *linq_wrap_builder_or_legacy(struct parser_params *p, NODE *runtime_query_call, NODE *legacy_expr, const YYLTYPE *loc);
+static NODE *linq_runtime_call(struct parser_params *p, ID mid, NODE *args, const YYLTYPE *loc);
+static int linq_range_var_id_p(struct parser_params *p, ID id);
+static NODE *linq_ir_expr(struct parser_params *p, NODE *expr, const YYLTYPE *loc);
+static NODE *linq_ir_args_array(struct parser_params *p, NODE *list, const YYLTYPE *loc);
+static NODE *linq_ir_clause_from_each(struct parser_params *p, ID var, NODE *source_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_where(struct parser_params *p, NODE *predicate_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_let(struct parser_params *p, ID var, NODE *value_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_join(struct parser_params *p, ID var, NODE *source_expr, NODE *left_expr, NODE *right_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_join_into(struct parser_params *p, ID var, ID into_name, NODE *source_expr, NODE *left_expr, NODE *right_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_group(struct parser_params *p, NODE *item_expr, NODE *key_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_group_into(struct parser_params *p, ID into_name, NODE *item_expr, NODE *key_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_having(struct parser_params *p, NODE *predicate_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_order(struct parser_params *p, NODE *key_expr, NODE *dir_symbol, int primary, const YYLTYPE *loc);
+static NODE *linq_ir_clause_limit(struct parser_params *p, NODE *value_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_offset(struct parser_params *p, NODE *value_expr, const YYLTYPE *loc);
+static NODE *linq_ir_clause_select(struct parser_params *p, NODE *projection_expr, const YYLTYPE *loc);
 static NODE *method_add_block(struct parser_params*p, NODE *m, NODE *b, const YYLTYPE *loc) {RNODE_ITER(b)->nd_iter = m; b->nd_loc = *loc; return b;}
 
 static bool args_info_empty_p(struct rb_args_info *args);
@@ -3562,12 +3597,16 @@ linq_query      : linq_chain keyword_select
                   %prec tLOWEST
                     {
                         value_expr(p, $4);
-                        NODE *call = NEW_CALL($1, rb_intern("select"), 0, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("select"), 0, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *select_clause = linq_ir_clause_select(p, linq_ir_expr(p, $4, &@4), &@$);
+                        NODE *chain = linq_chain_append_clause(p, $1, select_clause);
+                        NODE *runtime_query = linq_chain_build_runtime_query_call(p, chain, &@$);
                         dyna_pop(p, $dyna);
                         linq_finish_context(p);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_wrap_builder_or_legacy(p, runtime_query, legacy_expr, &@$);
                     }
                 | linq_chain linq_group_head[dyna]
                   arg[group_item] keyword_by arg[group_key]
@@ -3576,14 +3615,23 @@ linq_query      : linq_chain keyword_select
                         value_expr(p, $3);
                         value_expr(p, $5);
                         NODE *pair = list_append(p, NEW_LIST($3, &@group_item), $5);
-                        NODE *call = NEW_CALL($1, rb_intern("group"), 0, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("group"), 0, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, pair, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *group_clause = linq_ir_clause_group(
+                            p,
+                            linq_ir_expr(p, $3, &@group_item),
+                            linq_ir_expr(p, $5, &@group_key),
+                            &@$
+                        );
+                        NODE *chain = linq_chain_append_clause(p, $1, group_clause);
+                        NODE *runtime_query = linq_chain_build_runtime_query_call(p, chain, &@$);
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
                         p->linq_allow_having = 0;
                         linq_finish_context(p);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_wrap_builder_or_legacy(p, runtime_query, legacy_expr, &@$);
                     }
                 ;
 
@@ -3635,11 +3683,14 @@ linq_orderby_chain
                     }[dyna]<vars>
                   arg_value linq_orderby_opts
                     {
-                        NODE *call = NEW_CALL($1, rb_intern("orderby"), $5, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("orderby"), $5, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *order_clause = linq_ir_clause_order(p, linq_ir_expr(p, $4, &@4), $5, 1, &@$);
                         dyna_pop(p, $dyna);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, order_clause);
                     }
                 | linq_orderby_chain ','
                     {
@@ -3649,11 +3700,14 @@ linq_orderby_chain
                     }[dyna]<vars>
                   arg_value linq_orderby_opts
                     {
-                        NODE *call = NEW_CALL($1, rb_intern("thenby"), $5, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("thenby"), $5, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *order_clause = linq_ir_clause_order(p, linq_ir_expr(p, $4, &@4), $5, 0, &@$);
                         dyna_pop(p, $dyna);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, order_clause);
                     }
                 ;
 
@@ -3672,7 +3726,8 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         NODE *from_args = NEW_LIST(NEW_SYM(rb_id2str($2), &@2), &@2);
                         linq_reset_range_ids(p);
                         linq_push_range_id(p, $2, &@2);
-                        $$ = NEW_CALL($5, rb_intern("from"), from_args, &@$);
+                        NODE *legacy = NEW_CALL($5, rb_intern("from"), from_args, &@$);
+                        $$ = linq_chain_new(p, legacy, $5, $2);
                     }
                 | linq_chain keyword_from_clause tIDENTIFIER keyword_in linq_in_expr_head
                     {
@@ -3682,13 +3737,16 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                   arg_value terms?
                     {
                         NODE *from_args = NEW_LIST(NEW_SYM(rb_id2str($3), &@3), &@3);
-                        NODE *call = NEW_CALL($1, rb_intern("from_each"), from_args, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("from_each"), from_args, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $7, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *from_each_clause = linq_ir_clause_from_each(p, $3, linq_ir_expr(p, $7, &@7), &@$);
                         dyna_pop(p, $dyna);
                         p->linq_allow_having = 0;
                         linq_push_range_id(p, $3, &@3);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, from_each_clause);
                     }
                 | linq_chain keyword_join tIDENTIFIER keyword_in linq_in_expr_head arg_value
                     {
@@ -3705,19 +3763,35 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         NODE *join_args = NEW_LIST($6, &@6);
                         NODE *join_cond = call_bin_op(p, $9, idEq, $11, &@10, &@$);
                         NODE *call;
+                        NODE *join_clause;
                         int saved_len = p->linq_range_id_len;
                         if ($join_into) {
                             join_args = list_append(p, join_args, NEW_SYM(rb_id2str($3), &@3));
                             join_args = list_append(p, join_args, NEW_SYM(rb_id2str($join_into), &@join_into));
-                            call = NEW_CALL($1, rb_intern("join_into"), join_args, &@$);
+                            call = NEW_CALL(linq_chain_legacy($1), rb_intern("join_into"), join_args, &@$);
+                            join_clause = linq_ir_clause_join_into(
+                                p, $3, $join_into,
+                                linq_ir_expr(p, $6, &@6),
+                                linq_ir_expr(p, $9, &@9),
+                                linq_ir_expr(p, $11, &@11),
+                                &@$
+                            );
                             linq_push_range_id(p, $3, &@3);
                         }
                         else {
-                            call = NEW_CALL($1, rb_intern("join"), join_args, &@$);
+                            call = NEW_CALL(linq_chain_legacy($1), rb_intern("join"), join_args, &@$);
+                            join_clause = linq_ir_clause_join(
+                                p, $3,
+                                linq_ir_expr(p, $6, &@6),
+                                linq_ir_expr(p, $9, &@9),
+                                linq_ir_expr(p, $11, &@11),
+                                &@$
+                            );
                             linq_push_range_id(p, $3, &@3);
                         }
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, join_cond, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
                         p->linq_allow_having = 0;
@@ -3725,7 +3799,8 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                             p->linq_range_id_len = saved_len;
                             linq_push_range_id(p, $join_into, &@join_into);
                         }
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, join_clause);
                     }
                 | linq_chain keyword_where
                     {
@@ -3734,12 +3809,15 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                     }[dyna]<vars>
                   arg_value terms?
                     {
-                        NODE *call = NEW_CALL($1, rb_intern("where"), 0, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("where"), 0, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *where_clause = linq_ir_clause_where(p, linq_ir_expr(p, $4, &@4), &@$);
                         dyna_pop(p, $dyna);
                         p->linq_allow_having = 0;
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, where_clause);
                     }
                 | linq_chain keyword_let tIDENTIFIER '='
                     {
@@ -3749,13 +3827,16 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                   arg_value terms?
                     {
                         NODE *let_args = NEW_LIST(NEW_SYM(rb_id2str($3), &@3), &@3);
-                        NODE *call = NEW_CALL($1, rb_intern("let"), let_args, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("let"), let_args, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $6, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *let_clause = linq_ir_clause_let(p, $3, linq_ir_expr(p, $6, &@6), &@$);
                         dyna_pop(p, $dyna);
                         p->linq_allow_having = 0;
                         linq_push_range_id(p, $3, &@3);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, let_clause);
                     }
                 | linq_chain linq_group_head[dyna]
                   arg[group_item] keyword_by arg[group_key]
@@ -3765,15 +3846,23 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                         value_expr(p, $5);
                         NODE *pair = list_append(p, NEW_LIST($3, &@group_item), $5);
                         NODE *group_args = NEW_LIST(NEW_SYM(rb_id2str($group_into), &@group_into), &@group_into);
-                        NODE *call = NEW_CALL($1, rb_intern("group_into"), group_args, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("group_into"), group_args, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, pair, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *group_into_clause = linq_ir_clause_group_into(
+                            p, $group_into,
+                            linq_ir_expr(p, $3, &@group_item),
+                            linq_ir_expr(p, $5, &@group_key),
+                            &@$
+                        );
                         dyna_pop(p, $dyna);
                         p->ctxt.linq_expect_into = 0;
                         p->linq_allow_having = 1;
                         linq_reset_range_ids(p);
                         linq_push_range_id(p, $group_into, &@group_into);
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, group_into_clause);
                     }
                 | linq_chain keyword_having
                     {
@@ -3785,12 +3874,15 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                     }[dyna]<vars>
                   arg_value terms?
                     {
-                        NODE *call = NEW_CALL($1, rb_intern("having"), 0, &@$);
+                        NODE *call = NEW_CALL(linq_chain_legacy($1), rb_intern("having"), 0, &@$);
                         rb_node_args_t *args = linq_block_args(p, &@2);
                         NODE *block = linq_new_iter(p, args, $4, &@$);
+                        NODE *legacy_expr = method_add_block(p, call, block, &@$);
+                        NODE *having_clause = linq_ir_clause_having(p, linq_ir_expr(p, $4, &@4), &@$);
                         dyna_pop(p, $dyna);
                         p->linq_allow_having = 0;
-                        $$ = method_add_block(p, call, block, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, having_clause);
                     }
                 | linq_orderby_chain terms?
                     {
@@ -3801,15 +3893,21 @@ linq_chain      : keyword_from tIDENTIFIER keyword_in linq_in_expr_head arg_valu
                   arg_value terms?
                     {
                         NODE *limit_args = NEW_LIST($3, &@3);
+                        NODE *legacy_expr = NEW_CALL(linq_chain_legacy($1), rb_intern("limit"), limit_args, &@$);
+                        NODE *limit_clause = linq_ir_clause_limit(p, linq_ir_expr(p, $3, &@3), &@$);
                         p->linq_allow_having = 0;
-                        $$ = NEW_CALL($1, rb_intern("limit"), limit_args, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, limit_clause);
                     }
                 | linq_chain keyword_offset
                   arg_value terms?
                     {
                         NODE *offset_args = NEW_LIST($3, &@3);
+                        NODE *legacy_expr = NEW_CALL(linq_chain_legacy($1), rb_intern("offset"), offset_args, &@$);
+                        NODE *offset_clause = linq_ir_clause_offset(p, linq_ir_expr(p, $3, &@3), &@$);
                         p->linq_allow_having = 0;
-                        $$ = NEW_CALL($1, rb_intern("offset"), offset_args, &@$);
+                        $$ = linq_chain_set_legacy($1, legacy_expr);
+                        $$ = linq_chain_append_clause(p, $$, offset_clause);
                     }
                 ;
 
@@ -12210,6 +12308,353 @@ linq_finish_context(struct parser_params *p)
     p->ctxt.linq_expect_into = 0;
     p->linq_allow_having = 0;
     linq_reset_range_ids(p);
+}
+
+static NODE *
+linq_runtime_call(struct parser_params *p, ID mid, NODE *args, const YYLTYPE *loc)
+{
+    NODE *linq = NEW_CONST(rb_intern_const("Linq"), loc);
+    return NEW_CALL(linq, mid, args, loc);
+}
+
+static NODE *
+linq_chain_new(struct parser_params *p, NODE *legacy, NODE *root_source, ID root_range)
+{
+    struct RNode_LINQ_CHAIN *chain = NODE_NEW_INTERNAL(NODE_LINQ_CHAIN, struct RNode_LINQ_CHAIN);
+    chain->legacy = legacy;
+    chain->root_source = root_source;
+    chain->root_range = root_range;
+    chain->clauses = 0;
+    return (NODE *)chain;
+}
+
+static NODE *
+linq_chain_legacy(NODE *chain)
+{
+    if (nd_type_p(chain, (enum node_type)NODE_LINQ_CHAIN)) {
+        return RNODE_LINQ_CHAIN(chain)->legacy;
+    }
+    return chain;
+}
+
+static NODE *
+linq_chain_set_legacy(NODE *chain, NODE *legacy)
+{
+    RNODE_LINQ_CHAIN(chain)->legacy = legacy;
+    return chain;
+}
+
+static NODE *
+linq_chain_append_clause(struct parser_params *p, NODE *chain, NODE *clause)
+{
+    if (!RNODE_LINQ_CHAIN(chain)->clauses) {
+        RNODE_LINQ_CHAIN(chain)->clauses = NEW_LIST(clause, &clause->nd_loc);
+    }
+    else {
+        RNODE_LINQ_CHAIN(chain)->clauses = list_append(p, RNODE_LINQ_CHAIN(chain)->clauses, clause);
+    }
+    return chain;
+}
+
+static NODE *
+linq_chain_build_runtime_query_call(struct parser_params *p, NODE *chain, const YYLTYPE *loc)
+{
+    NODE *range_sym = NEW_SYM(rb_id2str(RNODE_LINQ_CHAIN(chain)->root_range), loc);
+    NODE *clauses = RNODE_LINQ_CHAIN(chain)->clauses ? RNODE_LINQ_CHAIN(chain)->clauses : NEW_ZLIST(loc);
+    NODE *capture_binding = NEW_VCALL(rb_intern_const("binding"), loc);
+
+    NODE *args = NEW_LIST(RNODE_LINQ_CHAIN(chain)->root_source, loc);
+    args = list_append(p, args, range_sym);
+    args = list_append(p, args, clauses);
+    args = list_append(p, args, capture_binding);
+    return linq_runtime_call(p, rb_intern_const("__build_query__"), args, loc);
+}
+
+static NODE *
+linq_wrap_builder_or_legacy(struct parser_params *p, NODE *runtime_query_call, NODE *legacy_expr, const YYLTYPE *loc)
+{
+    ID id_linq = rb_intern_const("Linq");
+    ID id_object = rb_intern_const("Object");
+    NODE *const_defined_args = NEW_LIST(NEW_SYM(rb_id2str(id_linq), loc), loc);
+    NODE *const_defined_call = NEW_CALL(
+        NEW_CONST(id_object, loc),
+        rb_intern_const("const_defined?"),
+        const_defined_args,
+        loc
+    );
+
+    NODE *respond_to_args = NEW_LIST(NEW_SYM(rb_id2str(rb_intern_const("__build_query__")), loc), loc);
+    NODE *respond_to_call = NEW_CALL(
+        NEW_CONST(id_linq, loc),
+        rb_intern_const("respond_to?"),
+        respond_to_args,
+        loc
+    );
+
+    NODE *cond = logop(p, idANDOP, const_defined_call, respond_to_call, loc, loc);
+    return new_if(p, cond, runtime_query_call, legacy_expr, loc, &NULL_LOC, &NULL_LOC, &NULL_LOC);
+}
+
+static int
+linq_range_var_id_p(struct parser_params *p, ID id)
+{
+    int i;
+    for (i = 0; i < p->linq_range_id_len; i++) {
+        if (p->linq_range_ids[i] == id) return 1;
+    }
+    return 0;
+}
+
+static NODE *
+linq_ir_args_array(struct parser_params *p, NODE *list, const YYLTYPE *loc)
+{
+    NODE *items = 0;
+    NODE *node = list;
+
+    if (!node) return NEW_ZLIST(loc);
+
+    if (!nd_type_p(node, NODE_LIST)) {
+        return NEW_LIST(linq_ir_expr(p, node, loc), loc);
+    }
+
+    for (; node; node = RNODE_LIST(node)->nd_next) {
+        NODE *head = RNODE_LIST(node)->nd_head;
+        NODE *item = linq_ir_expr(p, head, &head->nd_loc);
+        if (!items) {
+            items = NEW_LIST(item, &item->nd_loc);
+        }
+        else {
+            items = list_append(p, items, item);
+        }
+    }
+
+    return items ? items : NEW_ZLIST(loc);
+}
+
+static NODE *
+linq_ir_expr(struct parser_params *p, NODE *expr, const YYLTYPE *loc)
+{
+    NODE *args;
+
+    if (!expr) {
+        return linq_runtime_call(p, rb_intern_const("__ir_literal__"), NEW_LIST(NEW_NIL(loc), loc), loc);
+    }
+
+    switch (nd_type(expr)) {
+      case NODE_BEGIN:
+        if (RNODE_BEGIN(expr)->nd_body) {
+            return linq_ir_expr(p, RNODE_BEGIN(expr)->nd_body, &RNODE_BEGIN(expr)->nd_body->nd_loc);
+        }
+        return linq_runtime_call(p, rb_intern_const("__ir_literal__"), NEW_LIST(NEW_NIL(loc), loc), loc);
+      case NODE_BLOCK: {
+        NODE *last = last_expr_node(expr);
+        if (last) return linq_ir_expr(p, last, &last->nd_loc);
+        return linq_runtime_call(p, rb_intern_const("__ir_literal__"), NEW_LIST(NEW_NIL(loc), loc), loc);
+      }
+      case NODE_LVAR: {
+        ID id = RNODE_LVAR(expr)->nd_vid;
+        NODE *name = NEW_SYM(rb_id2str(id), loc);
+        return linq_runtime_call(
+            p,
+            linq_range_var_id_p(p, id) ? rb_intern_const("__ir_range_var__") : rb_intern_const("__ir_capture__"),
+            NEW_LIST(name, loc),
+            loc
+        );
+      }
+      case NODE_DVAR: {
+        ID id = RNODE_DVAR(expr)->nd_vid;
+        NODE *name = NEW_SYM(rb_id2str(id), loc);
+        return linq_runtime_call(
+            p,
+            linq_range_var_id_p(p, id) ? rb_intern_const("__ir_range_var__") : rb_intern_const("__ir_capture__"),
+            NEW_LIST(name, loc),
+            loc
+        );
+      }
+      case NODE_VCALL: {
+        ID id = RNODE_VCALL(expr)->nd_mid;
+        NODE *name = NEW_SYM(rb_id2str(id), loc);
+        return linq_runtime_call(
+            p,
+            linq_range_var_id_p(p, id) ? rb_intern_const("__ir_range_var__") : rb_intern_const("__ir_capture__"),
+            NEW_LIST(name, loc),
+            loc
+        );
+      }
+      case NODE_INTEGER:
+      case NODE_FLOAT:
+      case NODE_STR:
+      case NODE_SYM:
+      case NODE_TRUE:
+      case NODE_FALSE:
+      case NODE_NIL:
+      case NODE_ZLIST:
+        return linq_runtime_call(p, rb_intern_const("__ir_literal__"), NEW_LIST(expr, loc), loc);
+      case NODE_LIST: {
+        NODE *items = linq_ir_args_array(p, expr, loc);
+        return linq_runtime_call(p, rb_intern_const("__ir_array__"), NEW_LIST(items, loc), loc);
+      }
+      case NODE_CALL: {
+        NODE *recv_ir = linq_ir_expr(p, RNODE_CALL(expr)->nd_recv, &RNODE_CALL(expr)->nd_recv->nd_loc);
+        NODE *mid_sym = NEW_SYM(rb_id2str(RNODE_CALL(expr)->nd_mid), loc);
+        NODE *arg_irs = linq_ir_args_array(p, RNODE_CALL(expr)->nd_args, loc);
+        args = NEW_LIST(recv_ir, loc);
+        args = list_append(p, args, mid_sym);
+        args = list_append(p, args, arg_irs);
+        return linq_runtime_call(p, rb_intern_const("__ir_call__"), args, loc);
+      }
+      case NODE_OPCALL: {
+        NODE *recv_ir = linq_ir_expr(p, RNODE_OPCALL(expr)->nd_recv, &RNODE_OPCALL(expr)->nd_recv->nd_loc);
+        NODE *arg_nodes = RNODE_OPCALL(expr)->nd_args;
+        NODE *arg_irs = linq_ir_args_array(p, arg_nodes, loc);
+        NODE *mid_sym = NEW_SYM(rb_id2str(RNODE_OPCALL(expr)->nd_mid), loc);
+
+        if (arg_nodes && nd_type_p(arg_nodes, NODE_LIST) && !RNODE_LIST(arg_nodes)->nd_next) {
+            NODE *right_ir = linq_ir_expr(p, RNODE_LIST(arg_nodes)->nd_head, &RNODE_LIST(arg_nodes)->nd_head->nd_loc);
+            args = NEW_LIST(mid_sym, loc);
+            args = list_append(p, args, recv_ir);
+            args = list_append(p, args, right_ir);
+            return linq_runtime_call(p, rb_intern_const("__ir_op__"), args, loc);
+        }
+
+        args = NEW_LIST(recv_ir, loc);
+        args = list_append(p, args, mid_sym);
+        args = list_append(p, args, arg_irs);
+        return linq_runtime_call(p, rb_intern_const("__ir_call__"), args, loc);
+      }
+      case NODE_AND: {
+        NODE *left_ir = linq_ir_expr(p, RNODE_AND(expr)->nd_1st, &RNODE_AND(expr)->nd_1st->nd_loc);
+        NODE *right_ir = linq_ir_expr(p, RNODE_AND(expr)->nd_2nd, &RNODE_AND(expr)->nd_2nd->nd_loc);
+        args = NEW_LIST(NEW_SYM(rb_id2str(rb_intern_const("&&")), loc), loc);
+        args = list_append(p, args, left_ir);
+        args = list_append(p, args, right_ir);
+        return linq_runtime_call(p, rb_intern_const("__ir_op__"), args, loc);
+      }
+      case NODE_OR: {
+        NODE *left_ir = linq_ir_expr(p, RNODE_OR(expr)->nd_1st, &RNODE_OR(expr)->nd_1st->nd_loc);
+        NODE *right_ir = linq_ir_expr(p, RNODE_OR(expr)->nd_2nd, &RNODE_OR(expr)->nd_2nd->nd_loc);
+        args = NEW_LIST(NEW_SYM(rb_id2str(rb_intern_const("||")), loc), loc);
+        args = list_append(p, args, left_ir);
+        args = list_append(p, args, right_ir);
+        return linq_runtime_call(p, rb_intern_const("__ir_op__"), args, loc);
+      }
+      case NODE_LASGN:
+      case NODE_DASGN:
+      case NODE_IASGN:
+      case NODE_GASGN:
+      case NODE_CVASGN:
+      case NODE_CDECL: {
+        const char *reason = "assignment is not allowed in LINQ query expression";
+        rb_parser_string_t *s = rb_parser_string_new(p, reason, (long)strlen(reason));
+        return linq_runtime_call(p, rb_intern_const("__ir_unsupported__"), NEW_LIST(NEW_STR(s, loc), loc), loc);
+      }
+      default: {
+        const char *name = parser_node_name(nd_type(expr));
+        rb_parser_string_t *s = rb_parser_string_new(p, name, (long)strlen(name));
+        return linq_runtime_call(p, rb_intern_const("__ir_unsupported__"), NEW_LIST(NEW_STR(s, loc), loc), loc);
+      }
+    }
+}
+
+static NODE *
+linq_ir_clause_from_each(struct parser_params *p, ID var, NODE *source_expr, const YYLTYPE *loc)
+{
+    NODE *args = NEW_LIST(NEW_SYM(rb_id2str(var), loc), loc);
+    args = list_append(p, args, source_expr);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_from_each__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_where(struct parser_params *p, NODE *predicate_expr, const YYLTYPE *loc)
+{
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_where__"), NEW_LIST(predicate_expr, loc), loc);
+}
+
+static NODE *
+linq_ir_clause_let(struct parser_params *p, ID var, NODE *value_expr, const YYLTYPE *loc)
+{
+    NODE *args = NEW_LIST(NEW_SYM(rb_id2str(var), loc), loc);
+    args = list_append(p, args, value_expr);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_let__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_join(struct parser_params *p, ID var, NODE *source_expr, NODE *left_expr, NODE *right_expr, const YYLTYPE *loc)
+{
+    NODE *args = NEW_LIST(NEW_SYM(rb_id2str(var), loc), loc);
+    args = list_append(p, args, source_expr);
+    args = list_append(p, args, left_expr);
+    args = list_append(p, args, right_expr);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_join__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_join_into(struct parser_params *p, ID var, ID into_name, NODE *source_expr, NODE *left_expr, NODE *right_expr, const YYLTYPE *loc)
+{
+    NODE *args = NEW_LIST(NEW_SYM(rb_id2str(var), loc), loc);
+    args = list_append(p, args, NEW_SYM(rb_id2str(into_name), loc));
+    args = list_append(p, args, source_expr);
+    args = list_append(p, args, left_expr);
+    args = list_append(p, args, right_expr);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_join_into__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_group(struct parser_params *p, NODE *item_expr, NODE *key_expr, const YYLTYPE *loc)
+{
+    NODE *args = NEW_LIST(item_expr, loc);
+    args = list_append(p, args, key_expr);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_group__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_group_into(struct parser_params *p, ID into_name, NODE *item_expr, NODE *key_expr, const YYLTYPE *loc)
+{
+    NODE *args = NEW_LIST(NEW_SYM(rb_id2str(into_name), loc), loc);
+    args = list_append(p, args, item_expr);
+    args = list_append(p, args, key_expr);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_group_into__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_having(struct parser_params *p, NODE *predicate_expr, const YYLTYPE *loc)
+{
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_having__"), NEW_LIST(predicate_expr, loc), loc);
+}
+
+static NODE *
+linq_ir_clause_order(struct parser_params *p, NODE *key_expr, NODE *dir_symbol, int primary, const YYLTYPE *loc)
+{
+    ID id_asc = rb_intern_const("asc");
+    NODE *dir = NEW_SYM(rb_id2str(id_asc), loc);
+    NODE *primary_node = primary ? NEW_TRUE(loc) : NEW_FALSE(loc);
+
+    if (dir_symbol && nd_type_p(dir_symbol, NODE_LIST) && RNODE_LIST(dir_symbol)->nd_head) {
+        dir = RNODE_LIST(dir_symbol)->nd_head;
+    }
+
+    NODE *args = NEW_LIST(key_expr, loc);
+    args = list_append(p, args, dir);
+    args = list_append(p, args, primary_node);
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_order__"), args, loc);
+}
+
+static NODE *
+linq_ir_clause_limit(struct parser_params *p, NODE *value_expr, const YYLTYPE *loc)
+{
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_limit__"), NEW_LIST(value_expr, loc), loc);
+}
+
+static NODE *
+linq_ir_clause_offset(struct parser_params *p, NODE *value_expr, const YYLTYPE *loc)
+{
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_offset__"), NEW_LIST(value_expr, loc), loc);
+}
+
+static NODE *
+linq_ir_clause_select(struct parser_params *p, NODE *projection_expr, const YYLTYPE *loc)
+{
+    return linq_runtime_call(p, rb_intern_const("__ir_clause_select__"), NEW_LIST(projection_expr, loc), loc);
 }
 
 static rb_node_lambda_t *
