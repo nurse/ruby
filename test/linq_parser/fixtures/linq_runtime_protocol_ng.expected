@@ -1,1 +1,1 @@
-["Linq::QuerySourceTypeError", "query source contract violation: Integer is not Enumerable/provider source"]
+["Linq::QuerySourceTypeError", "query source contract violation (join source): Integer is neither Enumerable nor a provider source"]
