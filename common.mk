@@ -1198,6 +1198,7 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/timev.rb \
 		$(srcdir)/thread_sync.rb \
 		$(srcdir)/nilclass.rb \
+		$(srcdir)/string.rb \
 		$(srcdir)/prelude.rb \
 		$(srcdir)/gem_prelude.rb \
 		$(srcdir)/jit_hook.rb \

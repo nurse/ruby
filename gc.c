@@ -83,6 +83,7 @@
 #include "debug_counter.h"
 #include "eval_intern.h"
 #include "gc/gc.h"
+#include "gc/gc_impl.h"
 #include "id_table.h"
 #include "internal.h"
 #include "internal/class.h"
@@ -232,6 +233,12 @@ bool
 rb_gc_event_hook_required_p(rb_event_flag_t event)
 {
     return ruby_vm_event_flags & event;
+}
+
+bool
+rb_gc_auto_compact_p(void)
+{
+    return rb_gc_impl_auto_compact_p(rb_gc_get_objspace());
 }
 
 void
@@ -619,6 +626,7 @@ typedef struct gc_function_map {
     // GC
     void (*start)(void *objspace_ptr, bool full_mark, bool immediate_mark, bool immediate_sweep, bool compact);
     bool (*during_gc_p)(void *objspace_ptr);
+    bool (*auto_compact_p)(void *objspace_ptr);
     void (*prepare_heap)(void *objspace_ptr);
     void (*gc_enable)(void *objspace_ptr);
     void (*gc_disable)(void *objspace_ptr, bool finish_current_gc);
@@ -797,6 +805,7 @@ ruby_modular_gc_init(void)
     // GC
     load_modular_gc_func(start);
     load_modular_gc_func(during_gc_p);
+    load_modular_gc_func(auto_compact_p);
     load_modular_gc_func(prepare_heap);
     load_modular_gc_func(gc_enable);
     load_modular_gc_func(gc_disable);
@@ -884,6 +893,7 @@ ruby_modular_gc_init(void)
 // GC
 # define rb_gc_impl_start rb_gc_functions.start
 # define rb_gc_impl_during_gc_p rb_gc_functions.during_gc_p
+# define rb_gc_impl_auto_compact_p rb_gc_functions.auto_compact_p
 # define rb_gc_impl_prepare_heap rb_gc_functions.prepare_heap
 # define rb_gc_impl_gc_enable rb_gc_functions.gc_enable
 # define rb_gc_impl_gc_disable rb_gc_functions.gc_disable

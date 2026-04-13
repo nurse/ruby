@@ -3,6 +3,7 @@
 #![allow(clippy::let_and_return)]
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::ffi::{c_int, c_long, c_void};
 use std::slice;
@@ -19,15 +20,16 @@ use crate::state::ZJITState;
 use crate::stats::{CompileError, exit_counter_for_compile_error, exit_counter_for_unhandled_hir_insn, incr_counter, incr_counter_by, send_fallback_counter, send_fallback_counter_for_method_type, send_fallback_counter_for_super_method_type, send_fallback_counter_ptr_for_opcode, send_without_block_fallback_counter_for_method_type, send_without_block_fallback_counter_for_optimized_method_type};
 use crate::stats::{counter_ptr, with_time_stat, trace_compile_phase, Counter, Counter::{compile_time_ns, exit_compile_error}};
 use crate::{asm::CodeBlock, cruby::*, options::debug, virtualmem::CodePtr};
-use crate::backend::lir::{self, Assembler, C_ARG_OPNDS, C_RET_OPND, CFP, EC, NATIVE_STACK_PTR, Opnd, SP, SideExit, SideExitRecompile, Target, asm_ccall, asm_comment};
+use crate::backend::lir::{self, Assembler, C_ARG_OPNDS, C_RET_OPND, CFP, EC, NATIVE_BASE_PTR, NATIVE_STACK_PTR, Opnd, SP, SideExit, SideExitRecompile, Target, asm_ccall, asm_comment};
 use crate::hir::{iseq_to_hir, BlockId, Invariant, RangeType, SideExitReason::{self, *}, SpecialBackrefSymbol, SpecialObjectType};
-use crate::hir::{BlockHandler, Const, FrameState, Function, Insn, InsnId, Recompile, SendFallbackReason};
+use crate::hir::{BlockHandler, BranchEdge, Const, FrameState, Function, Insn, InsnId, Recompile, SendFallbackReason};
 use crate::hir_type::{types, Type};
 use crate::options::{get_option, PerfMap};
 use crate::cast::IntoUsize;
 
 /// Default maximum number of compiled versions per ISEQ.
 const DEFAULT_MAX_VERSIONS: usize = 2;
+const VSTR_WORDS: usize = 5;
 
 /// Maximum number of compiled versions per ISEQ.
 /// Configurable via --zjit-max-versions (default: 2).
@@ -52,6 +54,9 @@ const JIT_RETURN_POISON: Option<usize> = if cfg!(feature = "runtime_checks") {
 
 /// Ephemeral code generation state
 struct JITState {
+    /// HIR function currently being compiled.
+    function: *const Function,
+
     /// Instruction sequence for the method being compiled
     iseq: IseqPtr,
 
@@ -60,6 +65,15 @@ struct JITState {
 
     /// Low-level IR Operands indexed by High-level IR's Instruction ID
     opnds: Vec<Option<Opnd>>,
+
+    /// Static HIR output types indexed by Instruction ID.
+    types: Vec<Type>,
+
+    /// Native stack slot indices reserved for VStrAlloc outputs.
+    vstr_slots: Vec<Option<usize>>,
+
+    /// Total number of reserved native stack slots below the base pointer.
+    vstr_stack_base: usize,
 
     /// Labels for each basic block indexed by the BlockId
     labels: Vec<Option<Target>>,
@@ -75,9 +89,13 @@ impl JITState {
     /// Create a new JITState instance
     fn new(iseq: IseqPtr, version: IseqVersionRef, num_insns: usize, num_blocks: usize) -> Self {
         JITState {
+            function: std::ptr::null(),
             iseq,
             version,
             opnds: vec![None; num_insns],
+            types: vec![types::Any; num_insns],
+            vstr_slots: vec![None; num_insns],
+            vstr_stack_base: 0,
             labels: vec![None; num_blocks],
             jit_entries: Vec::default(),
             iseq_calls: Vec::default(),
@@ -87,6 +105,19 @@ impl JITState {
     /// Retrieve the output of a given instruction that has been compiled
     fn get_opnd(&self, insn_id: InsnId) -> lir::Opnd {
         self.opnds[insn_id.0].unwrap_or_else(|| panic!("Failed to get_opnd({insn_id})"))
+    }
+
+    fn get_type(&self, insn_id: InsnId) -> Type {
+        self.types[insn_id.0]
+    }
+
+    fn get_vstr_slot(&self, insn_id: InsnId) -> usize {
+        self.vstr_slots[insn_id.0].unwrap_or_else(|| panic!("Failed to get_vstr_slot({insn_id})"))
+    }
+
+    fn function(&self) -> &Function {
+        assert!(!self.function.is_null());
+        unsafe { &*self.function }
     }
 
     /// Find or create a label for a given BlockId
@@ -379,8 +410,30 @@ fn gen_iseq_body(cb: &mut CodeBlock, iseq: IseqPtr, mut version: IseqVersionRef,
 fn gen_function(cb: &mut CodeBlock, iseq: IseqPtr, version: IseqVersionRef, function: &Function) -> Result<(IseqCodePtrs, Vec<CodePtr>, Vec<IseqCallRef>), CompileError> {
     let (mut jit, asm) = trace_compile_phase("codegen", || {
         let num_spilled_params = max_num_params(function).saturating_sub(ALLOC_REGS.len());
+        let num_vstr_allocs = function.rpo().iter()
+            .flat_map(|&block_id| function.block(block_id).insns().copied())
+            .filter(|&insn_id| matches!(function.find(insn_id), Insn::VStrAlloc))
+            .count();
         let mut jit = JITState::new(iseq, version, function.num_insns(), function.num_blocks());
-        let mut asm = Assembler::new_with_stack_slots(num_spilled_params);
+        jit.function = function as *const Function;
+        for idx in 0..function.num_insns() {
+            let insn_id = InsnId(idx);
+            if function.find(insn_id).has_output() {
+                jit.types[idx] = function.type_of(insn_id);
+            }
+        }
+        let total_reserved_slots = num_spilled_params + num_vstr_allocs * VSTR_WORDS;
+        jit.vstr_stack_base = total_reserved_slots;
+        let mut next_vstr_slot = 0;
+        for &block_id in function.rpo().iter() {
+            for &insn_id in function.block(block_id).insns() {
+                if matches!(function.find(insn_id), Insn::VStrAlloc) {
+                    jit.vstr_slots[insn_id.0] = Some(next_vstr_slot);
+                    next_vstr_slot += VSTR_WORDS;
+                }
+            }
+        }
+        let mut asm = Assembler::new_with_stack_slots(total_reserved_slots);
 
         // Mapping from HIR block IDs to LIR block IDs.
         // This is is a one-to-one mapping from HIR to LIR blocks used for finding
@@ -623,15 +676,25 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
             gen_const_uint32(val.0)
         }
         Insn::Const { .. } => panic!("Unexpected Const in gen_insn: {insn}"),
-        Insn::NewArray { elements, state } => gen_new_array(asm, opnds!(elements), &function.frame_state(*state)),
-        Insn::NewHash { elements, state } => gen_new_hash(jit, asm, opnds!(elements), &function.frame_state(*state)),
-        Insn::NewRange { low, high, flag, state } => gen_new_range(jit, asm, opnd!(low), opnd!(high), *flag, &function.frame_state(*state)),
+        Insn::NewArray { elements, state } => {
+            let elements = materialize_values_if_vstr(jit, asm, elements, &function.frame_state(*state));
+            gen_new_array(asm, elements, &function.frame_state(*state))
+        }
+        Insn::NewHash { elements, state } => {
+            let elements = materialize_values_if_vstr(jit, asm, elements, &function.frame_state(*state));
+            gen_new_hash(jit, asm, elements, &function.frame_state(*state))
+        }
+        Insn::NewRange { low, high, flag, state } => {
+            let (low, high) = materialize_pair_if_vstr(jit, asm, *low, *high, &function.frame_state(*state));
+            gen_new_range(jit, asm, low, high, *flag, &function.frame_state(*state))
+        }
         Insn::NewRangeFixnum { low, high, flag, state } => gen_new_range_fixnum(asm, opnd!(low), opnd!(high), *flag, &function.frame_state(*state)),
         Insn::ArrayDup { val, state } => gen_array_dup(asm, opnd!(val), &function.frame_state(*state)),
         Insn::AdjustBounds { index, length } => gen_adjust_bounds(asm, opnd!(index), opnd!(length)),
         Insn::ArrayAref { array, index, .. } => gen_array_aref(asm, opnd!(array), opnd!(index)),
-        Insn::ArrayAset { array, index, val } => {
-            no_output!(gen_array_aset(asm, opnd!(array), opnd!(index), opnd!(val)))
+        Insn::ArrayAset { array, index, val, state } => {
+            let val = materialize_opnd_if_vstr(jit, asm, *val, &function.frame_state(*state));
+            no_output!(gen_array_aset(asm, opnd!(array), opnd!(index), val))
         }
         Insn::ArrayPop { array, state } => gen_array_pop(asm, opnd!(array), &function.frame_state(*state)),
         Insn::ArrayLength { array } => gen_array_length(asm, opnd!(array)),
@@ -647,6 +710,8 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         Insn::StringAppend { recv, other, state } => gen_string_append(jit, asm, opnd!(recv), opnd!(other), &function.frame_state(*state)),
         Insn::StringAppendCodepoint { recv, other, state } => gen_string_append_codepoint(jit, asm, opnd!(recv), opnd!(other), &function.frame_state(*state)),
         Insn::StringEqual { left, right } => gen_string_equal(asm, opnd!(left), opnd!(right)),
+        Insn::VStrAlloc => gen_vstr_alloc(jit, asm, insn_id),
+        Insn::MaterializeVStr { val, state } => materialize_opnd_if_vstr(jit, asm, *val, &function.frame_state(*state)),
         Insn::StringIntern { val, state } => gen_intern(asm, opnd!(val), &function.frame_state(*state)),
         Insn::ToRegexp { opt, values, state } => gen_toregexp(jit, asm, *opt, opnds!(values), &function.frame_state(*state)),
         Insn::Param => unreachable!("block.insns should not have Insn::Param"),
@@ -656,21 +721,34 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::Send { cd, block: Some(BlockHandler::BlockIseq(blockiseq)), state, reason, .. } => gen_send(jit, asm, cd, blockiseq, &function.frame_state(state), reason),
         &Insn::Send { cd, block: Some(BlockHandler::BlockArg), state, reason, .. } => gen_send(jit, asm, cd, std::ptr::null(), &function.frame_state(state), reason),
         &Insn::SendForward { cd, blockiseq, state, reason, .. } => gen_send_forward(jit, asm, cd, blockiseq, &function.frame_state(state), reason),
-        &Insn::SendDirect { cme, iseq, recv, ref args, kw_bits, block, state, .. } => gen_send_iseq_direct(
-                cb, jit, asm, cme, iseq, opnd!(recv), opnds!(args),
-                kw_bits, &function.frame_state(state), block,
-            ),
+        &Insn::SendDirect { cme, iseq, recv, ref args, kw_bits, block, state, .. } => {
+            let state = &function.frame_state(state);
+            let (recv, args) = materialize_send_operands_if_vstr(jit, asm, recv, args, state);
+            gen_send_iseq_direct(cb, jit, asm, cme, iseq, recv, args, kw_bits, state, block)
+        }
         &Insn::InvokeSuper { cd, blockiseq, state, reason, .. } => gen_invokesuper(jit, asm, cd, blockiseq, &function.frame_state(state), reason),
         &Insn::InvokeSuperForward { cd, blockiseq, state, reason, .. } => gen_invokesuperforward(jit, asm, cd, blockiseq, &function.frame_state(state), reason),
         &Insn::InvokeBlock { cd, state, reason, .. } => gen_invokeblock(jit, asm, cd, &function.frame_state(state), reason),
-        Insn::InvokeBlockIfunc { cd, block_handler, args, state, .. } => gen_invokeblock_ifunc(jit, asm, *cd, opnd!(block_handler), opnds!(args), &function.frame_state(*state)),
-        Insn::InvokeProc { recv, args, state, kw_splat } => gen_invokeproc(jit, asm, opnd!(recv), opnds!(args), *kw_splat, &function.frame_state(*state)),
+        Insn::InvokeBlockIfunc { cd, block_handler, args, state, .. } => {
+            let state = &function.frame_state(*state);
+            let (block_handler, args) = materialize_send_operands_if_vstr(jit, asm, *block_handler, args, state);
+            gen_invokeblock_ifunc(jit, asm, *cd, block_handler, args, state)
+        }
+        Insn::InvokeProc { recv, args, state, kw_splat } => {
+            let state = &function.frame_state(*state);
+            let (recv, args) = materialize_send_operands_if_vstr(jit, asm, *recv, args, state);
+            gen_invokeproc(jit, asm, recv, args, *kw_splat, state)
+        }
         // Ensure we have enough room fit ec, self, and arguments
         // TODO remove this check when we have stack args (we can use Time.new to test it)
         Insn::InvokeBuiltin { bf, state, .. } if bf.argc + 2 > (C_ARG_OPNDS.len() as i32) => return Err(*state),
-        Insn::InvokeBuiltin { bf, leaf, args, state, .. } => gen_invokebuiltin(jit, asm, &function.frame_state(*state), bf, *leaf, opnds!(args)),
+        Insn::InvokeBuiltin { bf, leaf, args, state, .. } => {
+            let state = &function.frame_state(*state);
+            let args = materialize_values_if_vstr(jit, asm, args, state);
+            gen_invokebuiltin(jit, asm, state, bf, *leaf, args)
+        }
         &Insn::EntryPoint { jit_entry_idx } => no_output!(gen_entry_point(jit, asm, jit_entry_idx)),
-        Insn::Return { val } => no_output!(gen_return(asm, opnd!(val))),
+        Insn::Return { val, state } => no_output!(gen_return(jit, asm, *val, &function.frame_state(*state))),
         Insn::FixnumAdd { left, right, state } => gen_fixnum_add(jit, asm, opnd!(left), opnd!(right), &function.frame_state(*state)),
         Insn::FixnumSub { left, right, state } => gen_fixnum_sub(jit, asm, opnd!(left), opnd!(right), &function.frame_state(*state)),
         Insn::FixnumMult { left, right, state } => gen_fixnum_mult(jit, asm, opnd!(left), opnd!(right), &function.frame_state(*state)),
@@ -718,44 +796,93 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::GuardLess { left, right, state } => gen_guard_less(jit, asm, opnd!(left), opnd!(right), &function.frame_state(state)),
         &Insn::GuardGreaterEq { left, right, state, .. } => gen_guard_greater_eq(jit, asm, opnd!(left), opnd!(right), &function.frame_state(state)),
         Insn::PatchPoint { invariant, state } => no_output!(gen_patch_point(jit, asm, invariant, &function.frame_state(*state))),
-        Insn::CCall { cfunc, recv, args, name, owner: _, return_type: _, elidable: _ } => gen_ccall(asm, *cfunc, *name, opnd!(recv), opnds!(args)),
+        Insn::CCall { cfunc, recv, args, name, owner: _, return_type, elidable: _ } => {
+            let recv = opnd!(recv);
+            let args = opnds!(args);
+            let ret = gen_ccall(asm, *cfunc, *name, recv, args);
+            if is_vstr_type(*return_type) {
+                recv
+            }
+            else {
+                ret
+            }
+        }
         // Give up CCallWithFrame for 7+ args since asm.ccall() supports at most 6 args (recv + args).
         // There's no test case for this because no core cfuncs have this many parameters. But C extensions could have such methods.
         Insn::CCallWithFrame { cd, state, args, .. } if args.len() + 1 > C_ARG_OPNDS.len() =>
             gen_send_without_block(jit, asm, *cd, &function.frame_state(*state), SendFallbackReason::CCallWithFrameTooManyArgs),
-        Insn::CCallWithFrame { cfunc, recv, name, args, cme, state, block, .. } =>
-            gen_ccall_with_frame(jit, asm, *cfunc, *name, opnd!(recv), opnds!(args), *cme, *block, &function.frame_state(*state)),
+        Insn::CCallWithFrame { cfunc, recv, name, args, cme, state, block, .. } => {
+            let state = &function.frame_state(*state);
+            let (recv, args) = materialize_send_operands_if_vstr(jit, asm, *recv, args, state);
+            gen_ccall_with_frame(jit, asm, *cfunc, *name, recv, args, *cme, *block, state)
+        }
         Insn::CCallVariadic { cfunc, recv, name, args, cme, state, block, return_type: _, elidable: _ } => {
-            gen_ccall_variadic(jit, asm, *cfunc, *name, opnd!(recv), opnds!(args), *cme, *block, &function.frame_state(*state))
+            let state = &function.frame_state(*state);
+            let (recv, args) = materialize_send_operands_if_vstr(jit, asm, *recv, args, state);
+            gen_ccall_variadic(jit, asm, *cfunc, *name, recv, args, *cme, *block, state)
         }
         Insn::GetIvar { self_val, id, ic, state: _ } => gen_getivar(jit, asm, opnd!(self_val), *id, *ic),
-        Insn::SetGlobal { id, val, state } => no_output!(gen_setglobal(jit, asm, *id, opnd!(val), &function.frame_state(*state))),
+        Insn::SetGlobal { id, val, state } => {
+            let val = materialize_opnd_if_vstr(jit, asm, *val, &function.frame_state(*state));
+            no_output!(gen_setglobal(jit, asm, *id, val, &function.frame_state(*state)))
+        }
         Insn::GetGlobal { id, state } => gen_getglobal(jit, asm, *id, &function.frame_state(*state)),
         &Insn::IsBlockParamModified { flags } => gen_is_block_param_modified(asm, opnd!(flags)),
         &Insn::GetBlockParam { ep_offset, level, state } => gen_getblockparam(jit, asm, ep_offset, level, &function.frame_state(state)),
-        &Insn::SetLocal { val, ep_offset, level } => no_output!(gen_setlocal(asm, opnd!(val), function.type_of(val), ep_offset, level)),
+        &Insn::SetLocal { val, ep_offset, level, state } => {
+            let val_type = function.type_of(val);
+            let val = materialize_opnd_if_vstr(jit, asm, val, &function.frame_state(state));
+            no_output!(gen_setlocal(asm, val, val_type, ep_offset, level))
+        }
         Insn::GetConstant { klass, id, allow_nil, state } => gen_getconstant(jit, asm, opnd!(klass), *id, opnd!(allow_nil), &function.frame_state(*state)),
         Insn::GetConstantPath { ic, state } => gen_get_constant_path(jit, asm, *ic, &function.frame_state(*state)),
         Insn::GetClassVar { id, ic, state } => gen_getclassvar(jit, asm, *id, *ic, &function.frame_state(*state)),
-        Insn::SetClassVar { id, val, ic, state } => no_output!(gen_setclassvar(jit, asm, *id, opnd!(val), *ic, &function.frame_state(*state))),
-        Insn::SetIvar { self_val, id, ic, val, state } => no_output!(gen_setivar(jit, asm, opnd!(self_val), *id, *ic, opnd!(val), &function.frame_state(*state))),
+        Insn::SetClassVar { id, val, ic, state } => {
+            let val = materialize_opnd_if_vstr(jit, asm, *val, &function.frame_state(*state));
+            no_output!(gen_setclassvar(jit, asm, *id, val, *ic, &function.frame_state(*state)))
+        }
+        Insn::SetIvar { self_val, id, ic, val, state } => {
+            let val = materialize_opnd_if_vstr(jit, asm, *val, &function.frame_state(*state));
+            no_output!(gen_setivar(jit, asm, opnd!(self_val), *id, *ic, val, &function.frame_state(*state)))
+        }
         Insn::FixnumBitCheck { val, index } => gen_fixnum_bit_check(asm, opnd!(val), *index),
         Insn::SideExit { state, reason, recompile } => no_output!(gen_side_exit(jit, asm, reason, *recompile, &function.frame_state(*state))),
         Insn::PutSpecialObject { value_type } => gen_putspecialobject(asm, *value_type),
-        Insn::AnyToString { val, str, state } => gen_anytostring(asm, opnd!(val), opnd!(str), &function.frame_state(*state)),
-        Insn::Defined { op_type, obj, pushval, v, state } => gen_defined(jit, asm, *op_type, *obj, *pushval, opnd!(v), &function.frame_state(*state)),
-        Insn::CheckMatch { target, pattern, flag, state } => gen_checkmatch(jit, asm, opnd!(target), opnd!(pattern), *flag, &function.frame_state(*state)),
+        Insn::AnyToString { val, str, state } => {
+            let (val, str) = materialize_pair_if_vstr(jit, asm, *val, *str, &function.frame_state(*state));
+            gen_anytostring(asm, val, str, &function.frame_state(*state))
+        }
+        Insn::Defined { op_type, obj, pushval, v, state } => {
+            let v = materialize_opnd_if_vstr(jit, asm, *v, &function.frame_state(*state));
+            gen_defined(jit, asm, *op_type, *obj, *pushval, v, &function.frame_state(*state))
+        }
+        Insn::CheckMatch { target, pattern, flag, state } => {
+            let (target, pattern) = materialize_pair_if_vstr(jit, asm, *target, *pattern, &function.frame_state(*state));
+            gen_checkmatch(jit, asm, target, pattern, *flag, &function.frame_state(*state))
+        }
         Insn::GetSpecialSymbol { symbol_type, state: _ } => gen_getspecial_symbol(asm, *symbol_type),
         Insn::GetSpecialNumber { nth, state } => gen_getspecial_number(asm, *nth, &function.frame_state(*state)),
         &Insn::IncrCounter(counter) => no_output!(gen_incr_counter(asm, counter)),
         Insn::IncrCounterPtr { counter_ptr } => no_output!(gen_incr_counter_ptr(asm, *counter_ptr)),
-        Insn::ObjToString { val, cd, state, .. } => gen_objtostring(jit, asm, opnd!(val), *cd, &function.frame_state(*state)),
+        Insn::ObjToString { val, cd, state, .. } => {
+            let val = materialize_opnd_if_vstr(jit, asm, *val, &function.frame_state(*state));
+            gen_objtostring(jit, asm, val, *cd, &function.frame_state(*state))
+        }
         &Insn::CheckInterrupts { state } => no_output!(gen_check_interrupts(jit, asm, &function.frame_state(state))),
         Insn::BreakPoint => no_output!(asm.breakpoint()),
         &Insn::HashDup { val, state } => { gen_hash_dup(asm, opnd!(val), &function.frame_state(state)) },
-        &Insn::HashAref { hash, key, state } => { gen_hash_aref(jit, asm, opnd!(hash), opnd!(key), &function.frame_state(state)) },
-        &Insn::HashAset { hash, key, val, state } => { no_output!(gen_hash_aset(jit, asm, opnd!(hash), opnd!(key), opnd!(val), &function.frame_state(state))) },
-        &Insn::ArrayPush { array, val, state } => { no_output!(gen_array_push(asm, opnd!(array), opnd!(val), &function.frame_state(state))) },
+        &Insn::HashAref { hash, key, state } => {
+            let key = materialize_opnd_if_vstr(jit, asm, key, &function.frame_state(state));
+            gen_hash_aref(jit, asm, opnd!(hash), key, &function.frame_state(state))
+        }
+        &Insn::HashAset { hash, key, val, state } => {
+            let (key, val) = materialize_pair_if_vstr(jit, asm, key, val, &function.frame_state(state));
+            no_output!(gen_hash_aset(jit, asm, opnd!(hash), key, val, &function.frame_state(state)))
+        }
+        &Insn::ArrayPush { array, val, state } => {
+            let val = materialize_opnd_if_vstr(jit, asm, val, &function.frame_state(state));
+            no_output!(gen_array_push(asm, opnd!(array), val, &function.frame_state(state)))
+        }
         &Insn::ToNewArray { val, state } => { gen_to_new_array(jit, asm, opnd!(val), &function.frame_state(state)) },
         &Insn::ToArray { val, state } => { gen_to_array(jit, asm, opnd!(val), &function.frame_state(state)) },
         &Insn::DefinedIvar { self_val, id, pushval, .. } => { gen_defined_ivar(asm, opnd!(self_val), id, pushval) },
@@ -766,12 +893,36 @@ fn gen_insn(cb: &mut CodeBlock, jit: &mut JITState, asm: &mut Assembler, functio
         &Insn::GetEP { level } => gen_get_ep(asm, level),
         Insn::LoadSelf => gen_load_self(),
         &Insn::LoadField { recv, id, offset, return_type } => gen_load_field(asm, opnd!(recv), id, offset, return_type),
-        &Insn::StoreField { recv, id, offset, val } => no_output!(gen_store_field(asm, opnd!(recv), id, offset, opnd!(val), function.type_of(val))),
-        &Insn::WriteBarrier { recv, val } => no_output!(gen_write_barrier(jit, asm, opnd!(recv), opnd!(val), function.type_of(val))),
+        &Insn::StoreField { recv, id, offset, val } => {
+            debug_assert!(
+                !is_vstr_type(function.type_of(val)),
+                "StoreField should not receive a VStr operand after materialization"
+            );
+            no_output!(gen_store_field(asm, opnd!(recv), id, offset, opnd!(val), function.type_of(val)))
+        }
+        &Insn::WriteBarrier { recv, val } => {
+            debug_assert!(
+                !is_vstr_type(function.type_of(val)),
+                "WriteBarrier should not receive a VStr operand after materialization"
+            );
+            no_output!(gen_write_barrier(jit, asm, opnd!(recv), opnd!(val), function.type_of(val)))
+        }
         &Insn::IsBlockGiven { lep } => gen_is_block_given(asm, opnd!(lep)),
-        Insn::ArrayInclude { elements, target, state } => gen_array_include(jit, asm, opnds!(elements), opnd!(target), &function.frame_state(*state)),
-        Insn::ArrayPackBuffer { elements, fmt, buffer, state } => gen_array_pack_buffer(jit, asm, opnds!(elements), opnd!(fmt), (*buffer).map(|buffer| opnd!(buffer)), &function.frame_state(*state)),
-        &Insn::DupArrayInclude { ary, target, state } => gen_dup_array_include(jit, asm, ary, opnd!(target), &function.frame_state(state)),
+        Insn::ArrayInclude { elements, target, state } => {
+            let target = materialize_opnd_if_vstr(jit, asm, *target, &function.frame_state(*state));
+            gen_array_include(jit, asm, opnds!(elements), target, &function.frame_state(*state))
+        }
+        Insn::ArrayPackBuffer { elements, fmt, buffer, state } => {
+            let state = &function.frame_state(*state);
+            let mut cache = HashMap::new();
+            let fmt = materialize_opnd_if_vstr_cached(jit, asm, *fmt, state, &mut cache);
+            let buffer = (*buffer).map(|buffer| materialize_opnd_if_vstr_cached(jit, asm, buffer, state, &mut cache));
+            gen_array_pack_buffer(jit, asm, opnds!(elements), fmt, buffer, state)
+        }
+        &Insn::DupArrayInclude { ary, target, state } => {
+            let target = materialize_opnd_if_vstr(jit, asm, target, &function.frame_state(state));
+            gen_dup_array_include(jit, asm, ary, target, &function.frame_state(state))
+        }
         Insn::ArrayHash { elements, state } => gen_opt_newarray_hash(jit, asm, opnds!(elements), &function.frame_state(*state)),
         &Insn::IsA { val, class } => gen_is_a(jit, asm, opnd!(val), opnd!(class)),
         &Insn::ArrayMax { ref elements, state } => gen_array_max(jit, asm, opnds!(elements), &function.frame_state(state)),
@@ -1067,6 +1218,8 @@ fn gen_ccall_with_frame(
     gen_save_sp(asm, caller_stack_size);
     gen_spill_stack(jit, asm, state);
     gen_spill_locals(jit, asm, state);
+    gen_save_sp(asm, caller_stack_size);
+    gen_save_sp(asm, caller_stack_size);
 
     let block_handler_specval = if let Some(BlockHandler::BlockIseq(block_iseq)) = block {
         // Change cfp->block_code in the current frame. See vm_caller_setup_arg_block().
@@ -1593,6 +1746,7 @@ fn gen_send_iseq_direct(
 
     gen_spill_locals(jit, asm, state);
     gen_spill_stack(jit, asm, state);
+    gen_save_sp(asm, state.stack().len() - args.len() - 1); // -1 for receiver
 
     // This mirrors vm_caller_setup_arg_block() in for the `blockiseq != NULL` case.
     // The HIR specialization guards ensure we will only reach here for literal blocks,
@@ -2242,8 +2396,180 @@ fn gen_entry_point(jit: &mut JITState, asm: &mut Assembler, jit_entry_idx: Optio
     asm.frame_setup(&[]);
 }
 
+fn gen_vstr_alloc(jit: &JITState, asm: &mut Assembler, insn_id: InsnId) -> Opnd {
+    let slot_offset = jit.get_vstr_slot(insn_id);
+    let disp_slots = jit.vstr_stack_base.checked_sub(slot_offset)
+        .unwrap_or_else(|| panic!("Invalid VStr stack offset for {insn_id}"));
+    let disp = -(disp_slots as i32) * SIZEOF_VALUE_I32;
+    asm.lea(Opnd::mem(VALUE_BITS, NATIVE_BASE_PTR, disp))
+}
+
+fn vstr_param_sources(function: &Function, insn_id: InsnId) -> Option<Vec<InsnId>> {
+    for block_id in function.rpo() {
+        let block = function.block(block_id);
+        for (param_idx, &param_id) in block.params().enumerate() {
+            if param_id != insn_id {
+                continue;
+            }
+
+            let mut sources = Vec::new();
+            for pred_block_id in function.rpo() {
+                let pred_block = function.block(pred_block_id);
+                let Some(&terminator_id) = pred_block.insns().last() else {
+                    continue;
+                };
+
+                match function.find(terminator_id) {
+                    Insn::Jump(BranchEdge { target, args })
+                    | Insn::IfTrue { target: BranchEdge { target, args }, .. }
+                    | Insn::IfFalse { target: BranchEdge { target, args }, .. }
+                        if target == block_id =>
+                    {
+                        if let Some(&arg_id) = args.get(param_idx) {
+                            sources.push(arg_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            return Some(sources);
+        }
+    }
+
+    None
+}
+
+fn vstr_home_insn(function: &Function, insn_id: InsnId) -> Option<InsnId> {
+    fn resolve(function: &Function, insn_id: InsnId, seen: &mut Vec<bool>) -> Option<InsnId> {
+        if std::mem::replace(&mut seen[insn_id.0], true) {
+            return None;
+        }
+
+        match function.find(insn_id) {
+            Insn::VStrAlloc => Some(insn_id),
+            Insn::CCall { recv, return_type, .. } if is_vstr_type(return_type) => {
+                resolve(function, recv, seen)
+            }
+            Insn::GuardType { val, .. }
+            | Insn::GuardTypeNot { val, .. }
+            | Insn::GuardBitEquals { val, .. }
+            | Insn::GuardAnyBitSet { val, .. }
+            | Insn::GuardNoBitsSet { val, .. }
+            | Insn::RefineType { val, .. } => resolve(function, val, seen),
+            Insn::Param => {
+                let sources = vstr_param_sources(function, insn_id)?;
+                let mut home = None;
+                for source in sources {
+                    let source_home = resolve(function, source, seen)?;
+                    match home {
+                        None => home = Some(source_home),
+                        Some(existing) if existing == source_home => {}
+                        Some(_) => return None,
+                    }
+                }
+                home
+            }
+            _ => None,
+        }
+    }
+
+    let mut seen = vec![false; function.num_insns()];
+    resolve(function, insn_id, &mut seen)
+}
+
+fn vstr_slot_mem(jit: &JITState, function: &Function, insn_id: InsnId) -> Option<Opnd> {
+    let home = vstr_home_insn(function, insn_id)?;
+    let slot_offset = jit.get_vstr_slot(home);
+    let disp_slots = jit.vstr_stack_base.checked_sub(slot_offset)
+        .unwrap_or_else(|| panic!("Invalid VStr stack offset for {insn_id}"));
+    let disp = -(disp_slots as i32) * SIZEOF_VALUE_I32;
+    Some(Opnd::mem(VALUE_BITS, NATIVE_BASE_PTR, disp))
+}
+
+fn is_vstr_type(ty: Type) -> bool {
+    !ty.bit_equal(types::Empty) && ty.is_subtype(types::VStr)
+}
+
+fn materialize_opnd_if_vstr(jit: &JITState, asm: &mut Assembler, insn_id: InsnId, state: &FrameState) -> Opnd {
+    let mut cache = HashMap::new();
+    materialize_opnd_if_vstr_cached(jit, asm, insn_id, state, &mut cache)
+}
+
+fn materialize_opnd_if_vstr_cached(
+    jit: &JITState,
+    asm: &mut Assembler,
+    insn_id: InsnId,
+    state: &FrameState,
+    cache: &mut HashMap<InsnId, Opnd>,
+) -> Opnd {
+    if is_vstr_type(jit.get_type(insn_id)) {
+        let Some(home) = vstr_home_insn(jit.function(), insn_id) else {
+            panic!(
+                "No VStr home slot for {insn_id} in {}",
+                iseq_get_location(jit.iseq, 0),
+            );
+        };
+        if let Some(&value) = cache.get(&home) {
+            return value;
+        }
+        let Some(slot) = vstr_slot_mem(jit, jit.function(), home) else {
+            panic!(
+                "No VStr home slot for {insn_id} in {}",
+                iseq_get_location(jit.iseq, 0),
+            );
+        };
+        let opnd = asm.lea(slot);
+        gen_prepare_leaf_call_with_gc(asm, state);
+        let value = asm_ccall!(asm, rb_jit_vstr_materialize, opnd);
+        cache.insert(home, value);
+        value
+    } else {
+        jit.get_opnd(insn_id)
+    }
+}
+
+fn materialize_values_if_vstr(jit: &JITState, asm: &mut Assembler, insn_ids: &[InsnId], state: &FrameState) -> Vec<Opnd> {
+    let mut cache = HashMap::new();
+    insn_ids
+        .iter()
+        .map(|&insn_id| materialize_opnd_if_vstr_cached(jit, asm, insn_id, state, &mut cache))
+        .collect()
+}
+
+fn materialize_send_operands_if_vstr(
+    jit: &JITState,
+    asm: &mut Assembler,
+    recv: InsnId,
+    args: &[InsnId],
+    state: &FrameState,
+) -> (Opnd, Vec<Opnd>) {
+    let mut cache = HashMap::new();
+    let recv = materialize_opnd_if_vstr_cached(jit, asm, recv, state, &mut cache);
+    let args = args
+        .iter()
+        .map(|&insn_id| materialize_opnd_if_vstr_cached(jit, asm, insn_id, state, &mut cache))
+        .collect();
+    (recv, args)
+}
+
+fn materialize_pair_if_vstr(
+    jit: &JITState,
+    asm: &mut Assembler,
+    left: InsnId,
+    right: InsnId,
+    state: &FrameState,
+) -> (Opnd, Opnd) {
+    let mut cache = HashMap::new();
+    let left = materialize_opnd_if_vstr_cached(jit, asm, left, state, &mut cache);
+    let right = materialize_opnd_if_vstr_cached(jit, asm, right, state, &mut cache);
+    (left, right)
+}
+
 /// Compile code that exits from JIT code with a return value
-fn gen_return(asm: &mut Assembler, val: lir::Opnd) {
+fn gen_return(jit: &JITState, asm: &mut Assembler, val: InsnId, state: &FrameState) {
+    let val = materialize_opnd_if_vstr(jit, asm, val, state);
+
     // Pop the current frame (ec->cfp++)
     // Note: the return PC is already in the previous CFP
     asm_comment!(asm, "pop stack frame");
@@ -2832,7 +3158,8 @@ fn gen_spill_locals(jit: &JITState, asm: &mut Assembler, state: &FrameState) {
     gen_incr_counter(asm, Counter::vm_write_locals_count);
     asm_comment!(asm, "spill locals");
     for (idx, &insn_id) in state.locals().enumerate() {
-        asm.mov(Opnd::mem(64, SP, (-local_idx_to_ep_offset(jit.iseq, idx) - 1) * SIZEOF_VALUE_I32), jit.get_opnd(insn_id));
+        let value = materialize_opnd_if_vstr(jit, asm, insn_id, state);
+        asm.mov(Opnd::mem(64, SP, (-local_idx_to_ep_offset(jit.iseq, idx) - 1) * SIZEOF_VALUE_I32), value);
     }
 }
 
@@ -2843,7 +3170,8 @@ fn gen_spill_stack(jit: &JITState, asm: &mut Assembler, state: &FrameState) {
     gen_incr_counter(asm, Counter::vm_write_stack_count);
     asm_comment!(asm, "spill stack");
     for (idx, &insn_id) in state.stack().enumerate() {
-        asm.mov(Opnd::mem(64, SP, idx as i32 * SIZEOF_VALUE_I32), jit.get_opnd(insn_id));
+        let value = materialize_opnd_if_vstr(jit, asm, insn_id, state);
+        asm.mov(Opnd::mem(64, SP, idx as i32 * SIZEOF_VALUE_I32), value);
     }
 }
 
@@ -2861,6 +3189,10 @@ fn gen_prepare_non_leaf_call(jit: &JITState, asm: &mut Assembler, state: &FrameS
 
     // Spill locals in case the method looks at caller Bindings
     gen_spill_locals(jit, asm, state);
+
+    // VStr materialization during spilling uses leaf GC-call setup, which may lower cfp->sp.
+    // Restore the current frame's visible SP before entering the non-leaf call.
+    gen_save_sp(asm, state.stack_size());
 }
 
 /// Frame metadata written by gen_push_frame()
@@ -3016,19 +3348,37 @@ fn side_exit_with_recompile(jit: &JITState, state: &FrameState, reason: SideExit
 /// Build a side-exit context
 fn build_side_exit(jit: &JITState, state: &FrameState) -> SideExit {
     let mut stack = Vec::new();
+    let mut stack_vstr = Vec::new();
     for &insn_id in state.stack() {
-        stack.push(jit.get_opnd(insn_id));
+        let is_vstr = is_vstr_type(jit.get_type(insn_id));
+        stack.push(if is_vstr {
+            vstr_slot_mem(jit, jit.function(), insn_id)
+                .unwrap_or_else(|| panic!("No VStr home slot for stack {insn_id} in {}", iseq_get_location(jit.iseq, 0)))
+        } else {
+            jit.get_opnd(insn_id)
+        });
+        stack_vstr.push(is_vstr);
     }
 
     let mut locals = Vec::new();
+    let mut locals_vstr = Vec::new();
     for &insn_id in state.locals() {
-        locals.push(jit.get_opnd(insn_id));
+        let is_vstr = is_vstr_type(jit.get_type(insn_id));
+        locals.push(if is_vstr {
+            vstr_slot_mem(jit, jit.function(), insn_id)
+                .unwrap_or_else(|| panic!("No VStr home slot for local {insn_id} in {}", iseq_get_location(jit.iseq, 0)))
+        } else {
+            jit.get_opnd(insn_id)
+        });
+        locals_vstr.push(is_vstr);
     }
 
     SideExit{
         pc: Opnd::const_ptr(state.pc),
         stack,
+        stack_vstr,
         locals,
+        locals_vstr,
         iseq: jit.iseq,
         recompile: None,
     }

@@ -26,7 +26,7 @@ mod bits {
   pub const CUInt64: u64 = 1u64 << 16;
   pub const CUInt8: u64 = 1u64 << 17;
   pub const CUnsigned: u64 = CShape | CUInt16 | CUInt32 | CUInt64 | CUInt8;
-  pub const CValue: u64 = CBool | CDouble | CInt | CNull | CPtr;
+  pub const CValue: u64 = CBool | CDouble | CInt | CNull | CPtr | VStr;
   pub const CallableMethodEntry: u64 = 1u64 << 18;
   pub const Class: u64 = 1u64 << 19;
   pub const DynamicSymbol: u64 = 1u64 << 20;
@@ -75,8 +75,11 @@ mod bits {
   pub const Truthy: u64 = BasicObject & !Falsy;
   pub const TypedTData: u64 = 1u64 << 44;
   pub const Undef: u64 = 1u64 << 45;
-  pub const AllBitPatterns: [(&str, u64); 75] = [
+  pub const VStr: u64 = 1u64 << 46;
+  pub const AllBitPatterns: [(&str, u64); 76] = [
     ("Any", Any),
+    ("CValue", CValue),
+    ("VStr", VStr),
     ("RubyValue", RubyValue),
     ("Immediate", Immediate),
     ("Undef", Undef),
@@ -127,7 +130,6 @@ mod bits {
     ("DynamicSymbol", DynamicSymbol),
     ("Class", Class),
     ("CallableMethodEntry", CallableMethodEntry),
-    ("CValue", CValue),
     ("CInt", CInt),
     ("CUnsigned", CUnsigned),
     ("CUInt8", CUInt8),
@@ -152,7 +154,7 @@ mod bits {
     ("ArrayExact", ArrayExact),
     ("Empty", Empty),
   ];
-  pub const NumTypeBits: u64 = 46;
+  pub const NumTypeBits: u64 = 47;
 }
 pub mod types {
   use super::*;
@@ -231,6 +233,7 @@ pub mod types {
   pub const Truthy: Type = Type::from_bits(bits::Truthy);
   pub const TypedTData: Type = Type::from_bits(bits::TypedTData);
   pub const Undef: Type = Type::from_bits(bits::Undef);
+  pub const VStr: Type = Type::from_bits(bits::VStr);
   pub const ExactBitsAndClass: [(u64, *const VALUE); 16] = [
     (bits::ObjectExact, &raw const crate::cruby::rb_cObject),
     (bits::BasicObjectExact, &raw const crate::cruby::rb_cBasicObject),

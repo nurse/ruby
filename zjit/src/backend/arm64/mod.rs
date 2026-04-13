@@ -875,9 +875,20 @@ impl Assembler {
                     asm.push_insn(Insn::Jne(label));
                 }
                 Insn::Store { dest, src } => {
+                    let num_bits = dest.rm_num_bits();
                     *dest = split_stack_membase(asm, *dest, SCRATCH0_OPND, &stack_state);
                     *src = split_stack_membase(asm, *src, SCRATCH1_OPND, &stack_state);
-                    asm.push_insn(insn);
+
+                    let src = match *src {
+                        Opnd::Reg(_) => *src,
+                        Opnd::None => panic!("Unexpected source operand during arm64 scratch split: {:?}", src),
+                        src => {
+                            let scratch = SCRATCH1_OPND.with_num_bits(num_bits);
+                            asm.load_into(scratch, src);
+                            scratch
+                        }
+                    };
+                    asm.store(*dest, src);
                 }
                 Insn::Mov { dest, src } => {
                     *src = split_stack_membase(asm, *src, SCRATCH0_OPND, &stack_state);
@@ -1277,7 +1288,11 @@ impl Assembler {
                             Self::EMIT_REG
                         }
                         &Opnd::Value(value) => {
-                            emit_load_gc_value(cb, &mut gc_offsets, Self::EMIT_OPND, value);
+                            if value.special_const_p() {
+                                emit_load_value(cb, Self::EMIT_OPND, value.as_u64());
+                            } else {
+                                emit_load_gc_value(cb, &mut gc_offsets, Self::EMIT_OPND, value);
+                            }
                             Self::EMIT_REG
                         }
                         src_mem @ &Opnd::Mem(Mem { num_bits: src_num_bits, base: MemBase::Reg(src_base_reg_no), disp: src_disp }) => {
@@ -1334,7 +1349,11 @@ impl Assembler {
                             };
                         },
                         Opnd::Value(value) => {
-                            emit_load_gc_value(cb, &mut gc_offsets, out.into(), value);
+                            if value.special_const_p() {
+                                emit_load_value(cb, out.into(), value.as_u64());
+                            } else {
+                                emit_load_gc_value(cb, &mut gc_offsets, out.into(), value);
+                            }
                         },
                         Opnd::None => {
                             unreachable!("Attempted to load from None operand");
@@ -1766,7 +1785,7 @@ mod tests {
 
         let val64 = asm.add(CFP, Opnd::UImm(64));
         asm.store(Opnd::mem(64, SP, 0x10), val64);
-        let side_exit = Target::SideExit { reason: SideExitReason::Interrupt, exit: SideExit { pc: 0.into(), iseq: std::ptr::null(), stack: vec![], locals: vec![], recompile: None } };
+        let side_exit = Target::SideExit { reason: SideExitReason::Interrupt, exit: SideExit { pc: 0.into(), iseq: std::ptr::null(), stack: vec![], stack_vstr: vec![], locals: vec![], locals_vstr: vec![], recompile: None } };
         asm.push_insn(Insn::Joz(val64, side_exit));
         asm.mov(C_ARG_OPNDS[0], C_RET_OPND.with_num_bits(32));
         asm.mov(C_ARG_OPNDS[1], Opnd::mem(64, SP, -8));

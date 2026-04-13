@@ -26,6 +26,20 @@ enum ruby_rstring_private_flags {
     RSTRING_CHILLED = STR_CHILLED,
 };
 
+typedef struct rb_jit_vstr_struct {
+    VALUE base;
+    long off;
+    long len;
+    int enc_idx;
+    uint8_t flags;
+} rb_jit_vstr_t;
+
+enum rb_jit_vstr_flags {
+    VSTR_CHAR_BOUNDARY_OK  = 1 << 0,
+    VSTR_FRESH_ON_MAT      = 1 << 1,
+    VSTR_PRESERVE_ENCODING = 1 << 2,
+};
+
 #ifdef rb_fstring_cstr
 # undef rb_fstring_cstr
 #endif
@@ -126,6 +140,28 @@ VALUE rb_obj_as_string_result(VALUE str, VALUE obj);
 VALUE rb_str_opt_plus(VALUE x, VALUE y);
 VALUE rb_str_concat_literals(size_t num, const VALUE *strary);
 VALUE rb_str_eql(VALUE str1, VALUE str2);
+bool rb_jit_vstr_enabled_p(VALUE ignored);
+bool rb_jit_vstr_supported_string_p(VALUE str);
+bool rb_jit_vstr_compatible_string_p(const rb_jit_vstr_t *slice, VALUE other);
+bool rb_jit_vstr_byteindex_supported_offset_p(const rb_jit_vstr_t *slice, long initpos);
+rb_jit_vstr_t *rb_jit_vstr_from_string(rb_jit_vstr_t *out, VALUE str, uint8_t flags);
+long rb_jit_vstr_length(const rb_jit_vstr_t *slice);
+long rb_jit_vstr_delete_prefix_len(const rb_jit_vstr_t *slice, VALUE prefix);
+long rb_jit_vstr_delete_suffix_len(const rb_jit_vstr_t *slice, VALUE suffix);
+long rb_jit_vstr_lstrip_beg(const rb_jit_vstr_t *slice);
+long rb_jit_vstr_rstrip_end(const rb_jit_vstr_t *slice);
+long rb_jit_vstr_chomp_drop(const rb_jit_vstr_t *slice);
+long rb_jit_vstr_chop_drop(const rb_jit_vstr_t *slice);
+rb_jit_vstr_t *rb_jit_vstr_copy(rb_jit_vstr_t *out, const rb_jit_vstr_t *slice);
+rb_jit_vstr_t *rb_jit_vstr_subseq(rb_jit_vstr_t *out, const rb_jit_vstr_t *slice, long off, long len);
+VALUE rb_jit_vstr_materialize(const rb_jit_vstr_t *slice);
+VALUE rb_jit_vstr_empty_p(const rb_jit_vstr_t *slice);
+VALUE rb_jit_vstr_bytesize(const rb_jit_vstr_t *slice);
+VALUE rb_jit_vstr_start_with(const rb_jit_vstr_t *slice, VALUE prefix);
+VALUE rb_jit_vstr_end_with(const rb_jit_vstr_t *slice, VALUE suffix);
+VALUE rb_jit_vstr_eql(const rb_jit_vstr_t *slice, VALUE other);
+VALUE rb_jit_vstr_equal(const rb_jit_vstr_t *slice, VALUE other);
+VALUE rb_jit_vstr_byteindex(const rb_jit_vstr_t *slice, VALUE needle, long initpos);
 VALUE rb_id_quote_unprintable(ID);
 VALUE rb_sym_proc_call(ID mid, int argc, const VALUE *argv, int kw_splat, VALUE passed_proc);
 VALUE rb_enc_literal_str(const char *ptr, long len, rb_encoding *enc);

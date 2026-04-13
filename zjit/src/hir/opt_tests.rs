@@ -145,6 +145,73 @@ mod hir_opt_tests {
     }
 
     #[test]
+    fn test_virtual_string_slice_chain() {
+        eval(r#"
+            def test(s) = s.strip.delete_prefix("https://").end_with?("/")
+            2.times { test("  https://example.com/\n") }
+        "#);
+        let hir = hir_string("test");
+        assert!(hir.contains("VStrAlloc"), "{hir}");
+        assert!(hir.contains("rb_jit_vstr_from_string"), "{hir}");
+        assert!(hir.contains("rb_jit_vstr_lstrip_beg"), "{hir}");
+        assert!(hir.contains("rb_jit_vstr_rstrip_end"), "{hir}");
+        assert!(hir.contains("rb_jit_vstr_delete_prefix_len"), "{hir}");
+        assert!(hir.contains("rb_jit_vstr_subseq"), "{hir}");
+        assert!(hir.contains("rb_jit_vstr_end_with"), "{hir}");
+        assert!(!hir.contains(":String#strip"), "{hir}");
+        assert!(!hir.contains(":String#delete_prefix"), "{hir}");
+        assert!(!hir.contains(":String#end_with?"), "{hir}");
+        assert!(!hir.contains("rb_jit_vstr_strip"), "{hir}");
+    }
+
+    #[test]
+    fn test_virtual_string_slice_negative_forms() {
+        eval(r#"
+            class VStrSubclass < String; end
+
+            def test_chomp_arg(s) = s.chomp("\n")
+            def test_chomp_nil(s) = s.chomp(nil)
+            def test_multi_end_with(s) = s.strip.end_with?("/", "!")
+            def test_strip_selectors(s) = s.strip(" ")
+            def test_subclass_receiver(s) = s.strip
+            def test_temporary_receiver(k, prefix) = k.to_s.delete_prefix(prefix)
+
+            2.times do
+              test_chomp_arg("x\n")
+              test_chomp_nil("x\n")
+              test_multi_end_with("  https://example.com/\n")
+              test_strip_selectors("  x  ")
+              test_subclass_receiver(VStrSubclass.new("  x\n"))
+              test_temporary_receiver(:prefix_abc, "prefix_")
+            end
+        "#);
+
+        let chomp_hir = hir_string("test_chomp_arg");
+        assert!(!chomp_hir.contains("VStrAlloc"), "{chomp_hir}");
+        assert!(chomp_hir.contains(":chomp"), "{chomp_hir}");
+
+        let chomp_nil_hir = hir_string("test_chomp_nil");
+        assert!(!chomp_nil_hir.contains("VStrAlloc"), "{chomp_nil_hir}");
+        assert!(chomp_nil_hir.contains(":chomp"), "{chomp_nil_hir}");
+
+        let multi_end_with_hir = hir_string("test_multi_end_with");
+        assert!(!multi_end_with_hir.contains("VStrAlloc"), "{multi_end_with_hir}");
+        assert!(multi_end_with_hir.contains(":end_with?"), "{multi_end_with_hir}");
+
+        let strip_selectors_hir = hir_string("test_strip_selectors");
+        assert!(!strip_selectors_hir.contains("VStrAlloc"), "{strip_selectors_hir}");
+        assert!(strip_selectors_hir.contains(":strip"), "{strip_selectors_hir}");
+
+        let subclass_hir = hir_string("test_subclass_receiver");
+        assert!(!subclass_hir.contains("VStrAlloc"), "{subclass_hir}");
+        assert!(subclass_hir.contains(":strip"), "{subclass_hir}");
+
+        let temporary_receiver_hir = hir_string("test_temporary_receiver");
+        assert!(!temporary_receiver_hir.contains("VStrAlloc"), "{temporary_receiver_hir}");
+        assert!(temporary_receiver_hir.contains(":delete_prefix"), "{temporary_receiver_hir}");
+    }
+
+    #[test]
     fn test_fold_fixnum_sub_large_negative_result() {
         eval("
             def test

@@ -7289,6 +7289,14 @@ rb_gc_impl_during_gc_p(void *objspace_ptr)
     return during_gc;
 }
 
+bool
+rb_gc_impl_auto_compact_p(void *objspace_ptr)
+{
+    (void)objspace_ptr;
+
+    return ruby_enable_autocompact;
+}
+
 #if RGENGC_PROFILE >= 2
 
 static const char*

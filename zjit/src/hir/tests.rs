@@ -5542,7 +5542,7 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb2, Insn::Jump(edge(bb3)));
 
         let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb3, Insn::Return { val: retval });
+        function.push_insn(bb3, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         let cfi = ControlFlowInfo::new(&function);
@@ -5568,7 +5568,7 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb2, Insn::Jump(edge(bb3)));
 
         let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb3, Insn::Return { val: retval });
+        function.push_insn(bb3, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         let cfi = ControlFlowInfo::new(&function);
@@ -5593,7 +5593,7 @@ pub(crate) mod hir_build_tests {
          function.push_insn(bb0, Insn::Jump(edge(bb1)));
 
          let retval = function.push_insn(bb1, Insn::Const { val: Const::CBool(true) });
-         function.push_insn(bb1, Insn::Return { val: retval });
+         function.push_insn(bb1, Insn::Return { val: retval, state: InsnId(0usize) });
 
          function.seal_entries();
          let cfi = ControlFlowInfo::new(&function);
@@ -5635,7 +5635,7 @@ pub(crate) mod hir_build_tests {
          function.push_insn(bb2, Insn::Jump(edge(bb3)));
 
          let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
-         function.push_insn(bb3, Insn::Return { val: retval });
+         function.push_insn(bb3, Insn::Return { val: retval, state: InsnId(0usize) });
 
          function.seal_entries();
          assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
@@ -5677,7 +5677,7 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb1, Insn::Jump(edge(bb3)));
 
         let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb3, Insn::Return { val: retval });
+        function.push_insn(bb3, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
@@ -5736,7 +5736,7 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb6, Insn::Jump(edge(bb7)));
 
         let retval = function.push_insn(bb7, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb7, Insn::Return { val: retval });
+        function.push_insn(bb7, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
@@ -5805,7 +5805,7 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb5, Insn::Jump(edge(bb4)));
 
         let retval = function.push_insn(bb3, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb3, Insn::Return { val: retval });
+        function.push_insn(bb3, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
@@ -5856,7 +5856,7 @@ pub(crate) mod hir_build_tests {
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
         let retval = function.push_insn(bb2, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb2, Insn::Return { val: retval });
+        function.push_insn(bb2, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         assert_snapshot!(format!("{}", FunctionPrinter::without_snapshot(&function)), @"
@@ -5912,7 +5912,7 @@ mod loop_info_tests {
         let val = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
         let _ = function.push_insn(bb2, Insn::IfTrue { val, target: edge(bb1)});
         let retval = function.push_insn(bb2, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb2, Insn::Return { val: retval });
+        let _ = function.push_insn(bb2, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
@@ -5981,7 +5981,7 @@ mod loop_info_tests {
         function.push_insn(bb3, Insn::Jump(edge(bb4)));
 
         let retval = function.push_insn(bb4, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb4, Insn::Return { val: retval });
+        let _ = function.push_insn(bb4, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         let cfi = ControlFlowInfo::new(&function);
@@ -6069,7 +6069,7 @@ mod loop_info_tests {
         function.push_insn(bb5, Insn::Jump(edge(bb6)));
 
         let retval = function.push_insn(bb6, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb6, Insn::Return { val: retval });
+        let _ = function.push_insn(bb6, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         let cfi = ControlFlowInfo::new(&function);
@@ -6144,7 +6144,7 @@ mod loop_info_tests {
         let _ = function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
         let retval = function.push_insn(bb2, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb2, Insn::Return { val: retval });
+        let _ = function.push_insn(bb2, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.seal_entries();
         let cfi = ControlFlowInfo::new(&function);
@@ -6282,7 +6282,7 @@ mod iongraph_tests {
         let bb0 = function.entry_block;
 
         let retval = function.push_insn(bb0, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb0, Insn::Return { val: retval });
+        function.push_insn(bb0, Insn::Return { val: retval, state: InsnId(0usize) });
 
         let json = function.to_iongraph_pass("simple");
         assert_snapshot!(json.to_string(), @r#"{"name":"simple", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
@@ -6297,7 +6297,7 @@ mod iongraph_tests {
         function.push_insn(bb0, Insn::Jump(edge(bb1)));
 
         let retval = function.push_insn(bb1, Insn::Const { val: Const::CBool(false) });
-        function.push_insn(bb1, Insn::Return { val: retval });
+        function.push_insn(bb1, Insn::Return { val: retval, state: InsnId(0usize) });
 
         let json = function.to_iongraph_pass("two_blocks");
         assert_snapshot!(json.to_string(), @r#"{"name":"two_blocks", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
@@ -6309,7 +6309,7 @@ mod iongraph_tests {
         let bb0 = function.entry_block;
 
         let val1 = function.push_insn(bb0, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb0, Insn::Return { val: val1 });
+        function.push_insn(bb0, Insn::Return { val: val1, state: InsnId(0usize) });
 
         let json = function.to_iongraph_pass("multiple_instructions");
         assert_snapshot!(json.to_string(), @r#"{"name":"multiple_instructions", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
@@ -6325,10 +6325,10 @@ mod iongraph_tests {
         function.push_insn(bb0, Insn::IfTrue { val: cond, target: edge(bb1) });
 
         let retval1 = function.push_insn(bb0, Insn::Const { val: Const::CBool(false) });
-        function.push_insn(bb0, Insn::Return { val: retval1 });
+        function.push_insn(bb0, Insn::Return { val: retval1, state: InsnId(0usize) });
 
         let retval2 = function.push_insn(bb1, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb1, Insn::Return { val: retval2 });
+        function.push_insn(bb1, Insn::Return { val: retval2, state: InsnId(0usize) });
 
         let json = function.to_iongraph_pass("conditional_branch");
         assert_snapshot!(json.to_string(), @r#"{"name":"conditional_branch", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);
@@ -6347,7 +6347,7 @@ mod iongraph_tests {
         let val = function.push_insn(bb0, Insn::Const { val: Const::Value(Qfalse) });
         let _ = function.push_insn(bb2, Insn::IfTrue { val, target: edge(bb1)});
         let retval = function.push_insn(bb2, Insn::Const { val: Const::CBool(true) });
-        let _ = function.push_insn(bb2, Insn::Return { val: retval });
+        let _ = function.push_insn(bb2, Insn::Return { val: retval, state: InsnId(0usize) });
 
         function.push_insn(bb1, Insn::Jump(edge(bb2)));
 
@@ -6367,10 +6367,10 @@ mod iongraph_tests {
         function.push_insn(bb0, Insn::Jump(edge(bb2)));
 
         let retval1 = function.push_insn(bb1, Insn::Const { val: Const::CBool(true) });
-        function.push_insn(bb1, Insn::Return { val: retval1 });
+        function.push_insn(bb1, Insn::Return { val: retval1, state: InsnId(0usize) });
 
         let retval2 = function.push_insn(bb2, Insn::Const { val: Const::CBool(false) });
-        function.push_insn(bb2, Insn::Return { val: retval2 });
+        function.push_insn(bb2, Insn::Return { val: retval2, state: InsnId(0usize) });
 
         let json = function.to_iongraph_pass("multiple_successors");
         assert_snapshot!(json.to_string(), @r#"{"name":"multiple_successors", "mir":{"blocks":[{"ptr":4096, "id":0, "loopDepth":0, "attributes":[], "predecessors":[], "successors":[], "instructions":[]}]}, "lir":{"blocks":[]}}"#);

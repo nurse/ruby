@@ -9,7 +9,7 @@
  */
 
 use crate::cruby::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use crate::hir_type::{types, Type};
 use crate::hir;
@@ -20,11 +20,26 @@ unsafe extern "C" {
     fn rb_jit_ary_at(ec: EcPtr, self_: VALUE, index: VALUE) -> VALUE;
     fn rb_jit_fixnum_inc(ec: EcPtr, self_: VALUE, num: VALUE) -> VALUE;
     fn rb_str_equal(str1: VALUE, str2: VALUE) -> VALUE;
+    fn rb_str_vstr_bytesize(ec: EcPtr, self_: VALUE) -> VALUE;
+    fn rb_str_vstr_copy(ec: EcPtr, self_: VALUE) -> VALUE;
+    fn rb_str_vstr_subseq(ec: EcPtr, self_: VALUE, off: VALUE, len: VALUE) -> VALUE;
+    fn rb_str_delete_prefix_len(ec: EcPtr, self_: VALUE, prefix: VALUE) -> VALUE;
+    fn rb_str_delete_suffix_len(ec: EcPtr, self_: VALUE, suffix: VALUE) -> VALUE;
+    fn rb_str_lstrip_beg(ec: EcPtr, self_: VALUE) -> VALUE;
+    fn rb_str_rstrip_end(ec: EcPtr, self_: VALUE) -> VALUE;
+    fn rb_str_chomp_drop(ec: EcPtr, self_: VALUE) -> VALUE;
+    fn rb_str_chop_drop(ec: EcPtr, self_: VALUE) -> VALUE;
+    fn rb_str_lstrip_selectors(ec: EcPtr, self_: VALUE, selectors: VALUE) -> VALUE;
+    fn rb_str_rstrip_selectors(ec: EcPtr, self_: VALUE, selectors: VALUE) -> VALUE;
+    fn rb_str_strip_selectors(ec: EcPtr, self_: VALUE, selectors: VALUE) -> VALUE;
+    fn rb_str_chomp_arg(ec: EcPtr, self_: VALUE, separator: VALUE) -> VALUE;
 }
 
 pub struct Annotations {
     cfuncs: HashMap<*mut c_void, FnProperties>,
     builtin_funcs: HashMap<*mut c_void, FnProperties>,
+    iseq_methods: HashMap<IseqPtr, FnProperties>,
+    vstr_method_ids: HashSet<ID>,
 }
 
 /// Runtime behaviors of C functions that implement a Ruby method
@@ -70,6 +85,15 @@ impl Annotations {
     pub fn get_builtin_properties(&self, bf: *const rb_builtin_function) -> Option<FnProperties> {
         let func_ptr = unsafe { (*bf).func_ptr as *mut c_void };
         self.builtin_funcs.get(&func_ptr).copied()
+    }
+
+    /// Query about properties of an annotated Ruby ISEQ method
+    pub fn get_iseq_properties(&self, iseq: IseqPtr) -> Option<FnProperties> {
+        self.iseq_methods.get(&iseq).copied()
+    }
+
+    pub fn is_vstr_method_id(&self, method_id: ID) -> bool {
+        self.vstr_method_ids.contains(&method_id)
     }
 }
 
@@ -156,11 +180,45 @@ fn annotate_builtin_method(props_map: &mut HashMap<*mut c_void, FnProperties>, c
     }
 }
 
+fn annotate_iseq_method(props_map: &mut HashMap<IseqPtr, FnProperties>, class: VALUE, method_name: &'static str, props: FnProperties) {
+    unsafe {
+        let method_id = rb_intern2(method_name.as_ptr().cast(), method_name.len().try_into().unwrap());
+        let method = rb_method_entry_at(class, method_id);
+        if method.is_null() {
+            panic!("Method {}#{} not found", std::ffi::CStr::from_ptr(rb_class2name(class)).to_str().unwrap_or("?"), method_name);
+        }
+
+        let cme = method.cast::<rb_callable_method_entry_t>();
+        let def_type = get_cme_def_type(cme);
+        if def_type != VM_METHOD_TYPE_ISEQ {
+            panic!(
+                "Method {}#{} is not an ISEQ method (type: {})",
+                std::ffi::CStr::from_ptr(rb_class2name(class)).to_str().unwrap_or("?"),
+                method_name,
+                def_type
+            );
+        }
+
+        let iseq = get_def_iseq_ptr((*cme).def);
+        if iseq.is_null() {
+            panic!(
+                "Failed to get ISEQ for {}#{}",
+                std::ffi::CStr::from_ptr(rb_class2name(class)).to_str().unwrap_or("?"),
+                method_name
+            );
+        }
+
+        props_map.insert(iseq, props);
+    }
+}
+
 /// Gather annotations. Run this right after boot since the annotations
 /// are about the stock versions of methods.
 pub fn init() -> Annotations {
     let cfuncs = &mut HashMap::new();
     let builtin_funcs = &mut HashMap::new();
+    let iseq_methods = &mut HashMap::new();
+    let vstr_method_ids = &mut HashSet::new();
 
     macro_rules! annotate {
         ($module:ident, $method_name:literal, $inline:ident) => {
@@ -221,6 +279,10 @@ pub fn init() -> Annotations {
     annotate!(rb_cString, "empty?", inline_string_empty_p, types::BoolExact, no_gc, leaf, elidable);
     annotate!(rb_cString, "<<", inline_string_append);
     annotate!(rb_cString, "==", inline_string_eq);
+    annotate!(rb_cString, "eql?", inline_string_eql, types::BoolExact, no_gc, leaf, elidable);
+    annotate!(rb_cString, "start_with?", inline_string_start_with, types::BoolExact);
+    annotate!(rb_cString, "end_with?", inline_string_end_with, types::BoolExact);
+    annotate!(rb_cString, "byteindex", inline_string_byteindex, types::Fixnum.union(types::NilClass));
     // Not elidable; has a side effect of setting the encoding if ENC_CODERANGE_UNKNOWN.
     // TOOD(max): Turn this into a load/compare. Will need to side-exit or do the full call if
     // ENC_CODERANGE_UNKNOWN.
@@ -282,11 +344,56 @@ pub fn init() -> Annotations {
     builtin_funcs.insert(rb_jit_fixnum_inc as *mut c_void, FnProperties { inline: inline_fixnum_inc, return_type: types::Fixnum, ..Default::default() });
     builtin_funcs.insert(rb_jit_ary_at as *mut c_void, FnProperties { inline: inline_ary_at, ..Default::default() });
     builtin_funcs.insert(rb_jit_ary_at_end as *mut c_void, FnProperties { inline: inline_ary_at_end, return_type: types::BoolExact, ..Default::default() });
+    builtin_funcs.insert(rb_str_vstr_bytesize as *mut c_void, FnProperties { return_type: types::Fixnum, ..Default::default() });
+    builtin_funcs.insert(rb_str_vstr_copy as *mut c_void, FnProperties { inline: inline_str_vstr_copy_builtin, return_type: types::StringExact, ..Default::default() });
+    builtin_funcs.insert(rb_str_vstr_subseq as *mut c_void, FnProperties { inline: inline_str_vstr_subseq_builtin, return_type: types::StringExact, ..Default::default() });
+    builtin_funcs.insert(rb_str_delete_prefix_len as *mut c_void, FnProperties { return_type: types::Fixnum.union(types::NilClass), ..Default::default() });
+    builtin_funcs.insert(rb_str_delete_suffix_len as *mut c_void, FnProperties { return_type: types::Fixnum.union(types::NilClass), ..Default::default() });
+    builtin_funcs.insert(rb_str_lstrip_beg as *mut c_void, FnProperties { return_type: types::Fixnum, ..Default::default() });
+    builtin_funcs.insert(rb_str_rstrip_end as *mut c_void, FnProperties { return_type: types::Fixnum, ..Default::default() });
+    builtin_funcs.insert(rb_str_chomp_drop as *mut c_void, FnProperties { return_type: types::Fixnum, ..Default::default() });
+    builtin_funcs.insert(rb_str_chop_drop as *mut c_void, FnProperties { return_type: types::Fixnum, ..Default::default() });
+    builtin_funcs.insert(rb_str_lstrip_selectors as *mut c_void, FnProperties { return_type: types::StringExact, ..Default::default() });
+    builtin_funcs.insert(rb_str_rstrip_selectors as *mut c_void, FnProperties { return_type: types::StringExact, ..Default::default() });
+    builtin_funcs.insert(rb_str_strip_selectors as *mut c_void, FnProperties { return_type: types::StringExact, ..Default::default() });
+    builtin_funcs.insert(rb_str_chomp_arg as *mut c_void, FnProperties { return_type: types::StringExact, ..Default::default() });
 
     Annotations {
         cfuncs: std::mem::take(cfuncs),
         builtin_funcs: std::mem::take(builtin_funcs),
+        iseq_methods: std::mem::take(iseq_methods),
+        vstr_method_ids: std::mem::take(vstr_method_ids),
     }
+}
+
+pub fn init_zjit_iseq_methods(annotations: &mut Annotations) {
+    let iseq_methods = &mut annotations.iseq_methods;
+    let vstr_method_ids = &mut annotations.vstr_method_ids;
+    iseq_methods.clear();
+    vstr_method_ids.clear();
+
+    macro_rules! annotate_iseq {
+        ($module:ident, $method_name:literal, $inline:ident, $return_type:expr $(, $properties:ident)*) => {
+            let mut props = FnProperties::default();
+            props.return_type = $return_type;
+            props.inline = $inline;
+            $(
+                props.$properties = true;
+            )*
+            let method_id = unsafe { rb_intern2($method_name.as_ptr().cast(), $method_name.len().try_into().unwrap()) };
+            vstr_method_ids.insert(method_id);
+            #[allow(unused_unsafe)]
+            annotate_iseq_method(iseq_methods, unsafe { $module }, $method_name, props);
+        };
+    }
+
+    annotate_iseq!(rb_cString, "delete_prefix", inline_string_delete_prefix, types::StringExact);
+    annotate_iseq!(rb_cString, "delete_suffix", inline_string_delete_suffix, types::StringExact);
+    annotate_iseq!(rb_cString, "lstrip", inline_string_lstrip, types::StringExact);
+    annotate_iseq!(rb_cString, "rstrip", inline_string_rstrip, types::StringExact);
+    annotate_iseq!(rb_cString, "strip", inline_string_strip, types::StringExact);
+    annotate_iseq!(rb_cString, "chomp", inline_string_chomp, types::StringExact);
+    annotate_iseq!(rb_cString, "chop", inline_string_chop, types::StringExact);
 }
 
 fn no_inline(_fun: &mut hir::Function, _block: hir::BlockId, _recv: hir::InsnId, _args: &[hir::InsnId], _state: hir::InsnId) -> Option<hir::InsnId> {
@@ -384,7 +491,7 @@ fn inline_array_aset(fun: &mut hir::Function, block: hir::BlockId, recv: hir::In
             use crate::hir::SideExitReason;
             let index = fun.push_insn(block, hir::Insn::GuardGreaterEq { left: index, right: zero, reason: SideExitReason::GuardGreaterEq, state });
 
-            let _ = fun.push_insn(block, hir::Insn::ArrayAset { array: recv, index, val });
+            let _ = fun.push_insn(block, hir::Insn::ArrayAset { array: recv, index, val, state });
             fun.push_insn(block, hir::Insn::WriteBarrier { recv, val });
             return Some(val);
         }
@@ -441,7 +548,297 @@ fn inline_hash_aset(fun: &mut hir::Function, block: hir::BlockId, recv: hir::Ins
     }
 }
 
+fn guard_c_bool_true(fun: &mut hir::Function, block: hir::BlockId, value: hir::InsnId, state: hir::InsnId) {
+    fun.push_insn(block, hir::Insn::GuardBitEquals {
+        val: value,
+        expected: hir::Const::CInt64(1),
+        reason: hir::SideExitReason::DirectiveInduced,
+        state,
+        recompile: None,
+    });
+}
+
+fn vstr_alloc(fun: &mut hir::Function, block: hir::BlockId) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::VStrAlloc)
+}
+
+fn guard_vstr_enabled(fun: &mut hir::Function, block: hir::BlockId, state: hir::InsnId) {
+    let nil = fun.push_insn(block, hir::Insn::Const { val: hir::Const::Value(Qnil) });
+    let enabled = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_enabled_p as *const u8,
+        recv: nil,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    guard_c_bool_true(fun, block, enabled, state);
+}
+
+fn guard_supported_string(fun: &mut hir::Function, block: hir::BlockId, string: hir::InsnId, state: hir::InsnId) {
+    let supported = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_supported_string_p as *const u8,
+        recv: string,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    guard_c_bool_true(fun, block, supported, state);
+}
+
+fn guard_compatible_string(fun: &mut hir::Function, block: hir::BlockId, slice: hir::InsnId, other: hir::InsnId, state: hir::InsnId) {
+    let compatible = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_compatible_string_p as *const u8,
+        recv: slice,
+        args: vec![other],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    guard_c_bool_true(fun, block, compatible, state);
+}
+
+fn vstr_param_sources(fun: &hir::Function, insn_id: hir::InsnId) -> Option<Vec<hir::InsnId>> {
+    for block_id in fun.rpo() {
+        let block = fun.block(block_id);
+        for (param_idx, &param_id) in block.params().enumerate() {
+            if param_id != insn_id {
+                continue;
+            }
+
+            let mut sources = Vec::new();
+            for pred_block_id in fun.rpo() {
+                let pred_block = fun.block(pred_block_id);
+                let Some(&terminator_id) = pred_block.insns().last() else {
+                    continue;
+                };
+
+                match fun.find(terminator_id) {
+                    hir::Insn::Jump(hir::BranchEdge { target, args })
+                    | hir::Insn::IfTrue { target: hir::BranchEdge { target, args }, .. }
+                    | hir::Insn::IfFalse { target: hir::BranchEdge { target, args }, .. }
+                        if target == block_id =>
+                    {
+                        if let Some(&arg_id) = args.get(param_idx) {
+                            sources.push(arg_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            return Some(sources);
+        }
+    }
+
+    None
+}
+
+fn vstr_rooted_source(fun: &hir::Function, recv: hir::InsnId) -> bool {
+    fn resolve(
+        fun: &hir::Function,
+        recv: hir::InsnId,
+        visiting: &mut Vec<bool>,
+        memo: &mut Vec<Option<bool>>,
+    ) -> bool {
+        if let Some(result) = memo[recv.0] {
+            return result;
+        }
+        if visiting[recv.0] {
+            return false;
+        }
+
+        visiting[recv.0] = true;
+        let result = match fun.find(recv) {
+            hir::Insn::LoadArg { .. } | hir::Insn::LoadSelf => true,
+            hir::Insn::LoadField { recv, .. } => matches!(fun.find(recv), hir::Insn::LoadSP),
+            hir::Insn::GuardType { val, .. }
+            | hir::Insn::GuardTypeNot { val, .. }
+            | hir::Insn::GuardBitEquals { val, .. }
+            | hir::Insn::GuardAnyBitSet { val, .. }
+            | hir::Insn::GuardNoBitsSet { val, .. }
+            | hir::Insn::RefineType { val, .. } => resolve(fun, val, visiting, memo),
+            hir::Insn::Param => match vstr_param_sources(fun, recv) {
+                Some(sources) => {
+                    !sources.is_empty() && sources.into_iter().all(|source| resolve(fun, source, visiting, memo))
+                }
+                None => false,
+            },
+            _ => false,
+        };
+        visiting[recv.0] = false;
+        memo[recv.0] = Some(result);
+        result
+    }
+
+    let mut visiting = vec![false; fun.num_insns()];
+    let mut memo = vec![None; fun.num_insns()];
+    resolve(fun, recv, &mut visiting, &mut memo)
+}
+
+fn is_vstr_type(ty: Type) -> bool {
+    !ty.bit_equal(types::Empty) && ty.is_subtype(types::VStr)
+}
+
+fn ensure_vstr(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, state: hir::InsnId) -> Option<hir::InsnId> {
+    match fun.find(recv) {
+        hir::Insn::GuardType { val, .. }
+        | hir::Insn::GuardTypeNot { val, .. }
+        | hir::Insn::RefineType { val, .. } => {
+            if let Some(recv) = ensure_vstr(fun, block, val, state) {
+                return Some(recv);
+            }
+        }
+        _ => {}
+    }
+
+    if is_vstr_type(fun.type_of(recv)) {
+        return Some(recv);
+    }
+    if !fun.likely_a(recv, types::StringExact, state) {
+        return None;
+    }
+    if !vstr_rooted_source(fun, recv) {
+        return None;
+    }
+
+    let recv = fun.coerce_to(block, recv, types::StringExact, state);
+    guard_vstr_enabled(fun, block, state);
+    guard_supported_string(fun, block, recv, state);
+
+    let out = vstr_alloc(fun, block);
+    let flags = fun.push_insn(block, hir::Insn::Const { val: hir::Const::CUInt64(0) });
+    Some(fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_from_string as *const u8,
+        recv: out,
+        args: vec![recv, flags],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::VStr,
+        elidable: false,
+    }))
+}
+
+fn zero_fixnum(fun: &mut hir::Function, block: hir::BlockId) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::Const {
+        val: hir::Const::Value(VALUE::fixnum_from_usize(0)),
+    })
+}
+
+fn box_fixnum(fun: &mut hir::Function, block: hir::BlockId, val: hir::InsnId, state: hir::InsnId) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::BoxFixnum { val, state })
+}
+
+fn vstr_length(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_length as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(bytesize),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    })
+}
+
+fn vstr_length_fixnum(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, state: hir::InsnId) -> hir::InsnId {
+    let length = vstr_length(fun, block, recv);
+    box_fixnum(fun, block, length, state)
+}
+
+fn call_vstr_copy(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId) -> hir::InsnId {
+    let out = vstr_alloc(fun, block);
+    fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_copy as *const u8,
+        recv: out,
+        args: vec![recv],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::VStr,
+        elidable: false,
+    })
+}
+
+fn call_vstr_subseq(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, off: hir::InsnId, len: hir::InsnId) -> hir::InsnId {
+    let out = vstr_alloc(fun, block);
+    fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_subseq as *const u8,
+        recv: out,
+        args: vec![recv, off, len],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::VStr,
+        elidable: false,
+    })
+}
+
+fn call_vstr_subseq_from_fixnums(
+    fun: &mut hir::Function,
+    block: hir::BlockId,
+    recv: hir::InsnId,
+    off: hir::InsnId,
+    len: hir::InsnId,
+) -> hir::InsnId {
+    let off = fun.push_insn(block, hir::Insn::UnboxFixnum { val: off });
+    let len = fun.push_insn(block, hir::Insn::UnboxFixnum { val: len });
+    call_vstr_subseq(fun, block, recv, off, len)
+}
+
+fn inline_str_vstr_copy_builtin(fun: &mut hir::Function, block: hir::BlockId, _recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[recv] = args else { return None; };
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    Some(call_vstr_copy(fun, block, recv))
+}
+
+fn inline_str_vstr_subseq_builtin(fun: &mut hir::Function, block: hir::BlockId, _recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[recv, off, len] = args else { return None; };
+    if !fun.likely_a(off, types::Fixnum, state) || !fun.likely_a(len, types::Fixnum, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let off = fun.coerce_to(block, off, types::Fixnum, state);
+    let len = fun.coerce_to(block, len, types::Fixnum, state);
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, off, len))
+}
+
+fn inline_vstr_string_consumer(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId, cfunc: *const u8, name: ID, return_type: Type) -> Option<hir::InsnId> {
+    let &[other] = args else { return None; };
+    if !fun.likely_a(other, types::String, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let other = fun.coerce_to(block, other, types::String, state);
+    guard_supported_string(fun, block, other, state);
+    guard_compatible_string(fun, block, recv, other, state);
+    Some(fun.push_insn(block, hir::Insn::CCall {
+        cfunc,
+        recv,
+        args: vec![other],
+        name,
+        owner: Qnil,
+        return_type,
+        elidable: true,
+    }))
+}
+
 fn inline_string_bytesize(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    if args.is_empty() && is_vstr_type(fun.type_of(recv)) {
+        return Some(fun.push_insn(block, hir::Insn::CCall {
+            cfunc: rb_jit_vstr_bytesize as *const u8,
+            recv,
+            args: vec![],
+            name: ID!(bytesize),
+            owner: Qnil,
+            return_type: types::Fixnum,
+            elidable: true,
+        }));
+    }
     if args.is_empty() && fun.likely_a(recv, types::String, state) {
         let recv = fun.coerce_to(block, recv, types::String, state);
         let len = fun.push_insn(block, hir::Insn::LoadField {
@@ -519,6 +916,17 @@ fn inline_string_setbyte(fun: &mut hir::Function, block: hir::BlockId, recv: hir
 
 fn inline_string_empty_p(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], _state: hir::InsnId) -> Option<hir::InsnId> {
     let &[] = args else { return None; };
+    if is_vstr_type(fun.type_of(recv)) {
+        return Some(fun.push_insn(block, hir::Insn::CCall {
+            cfunc: rb_jit_vstr_empty_p as *const u8,
+            recv,
+            args: vec![],
+            name: ID!(itself),
+            owner: Qnil,
+            return_type: types::BoolExact,
+            elidable: true,
+        }));
+    }
     let len = fun.push_insn(block, hir::Insn::LoadField {
         recv,
         id: ID!(len),
@@ -562,7 +970,231 @@ fn try_inline_string_equal(fun: &mut hir::Function, block: hir::BlockId, recv: h
 
 fn inline_string_eq(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
     let &[other] = args else { return None; };
+    if is_vstr_type(fun.type_of(recv)) {
+        return inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_equal as *const u8, ID!(itself), types::BoolExact);
+    }
     try_inline_string_equal(fun, block, recv, other, state)
+}
+
+fn inline_string_delete_prefix(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[other] = args else { return None; };
+    if !fun.likely_a(other, types::String, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let other = fun.coerce_to(block, other, types::String, state);
+    guard_supported_string(fun, block, other, state);
+    guard_compatible_string(fun, block, recv, other, state);
+
+    let drop = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_delete_prefix_len as *const u8,
+        recv,
+        args: vec![other],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let drop = box_fixnum(fun, block, drop, state);
+    let len = vstr_length_fixnum(fun, block, recv, state);
+    let new_len = fun.push_insn(block, hir::Insn::FixnumSub { left: len, right: drop, state });
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, drop, new_len))
+}
+
+fn inline_string_delete_suffix(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[other] = args else { return None; };
+    if !fun.likely_a(other, types::String, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let other = fun.coerce_to(block, other, types::String, state);
+    guard_supported_string(fun, block, other, state);
+    guard_compatible_string(fun, block, recv, other, state);
+
+    let drop = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_delete_suffix_len as *const u8,
+        recv,
+        args: vec![other],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let drop = box_fixnum(fun, block, drop, state);
+    let len = vstr_length_fixnum(fun, block, recv, state);
+    let new_len = fun.push_insn(block, hir::Insn::FixnumSub { left: len, right: drop, state });
+    let zero = zero_fixnum(fun, block);
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, zero, new_len))
+}
+
+fn inline_string_lstrip(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[] = args else { return None; };
+    let recv = ensure_vstr(fun, block, recv, state)?;
+
+    let beg = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_lstrip_beg as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let beg = box_fixnum(fun, block, beg, state);
+    let len = vstr_length_fixnum(fun, block, recv, state);
+    let new_len = fun.push_insn(block, hir::Insn::FixnumSub { left: len, right: beg, state });
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, beg, new_len))
+}
+
+fn inline_string_rstrip(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[] = args else { return None; };
+    let recv = ensure_vstr(fun, block, recv, state)?;
+
+    let fin = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_rstrip_end as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let fin = box_fixnum(fun, block, fin, state);
+    let zero = zero_fixnum(fun, block);
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, zero, fin))
+}
+
+fn inline_string_strip(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[] = args else { return None; };
+    let recv = ensure_vstr(fun, block, recv, state)?;
+
+    let beg = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_lstrip_beg as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let fin = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_rstrip_end as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let beg = box_fixnum(fun, block, beg, state);
+    let fin = box_fixnum(fun, block, fin, state);
+    let new_len = fun.push_insn(block, hir::Insn::FixnumSub { left: fin, right: beg, state });
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, beg, new_len))
+}
+
+fn inline_string_chomp(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[] = args else { return None; };
+    let recv = ensure_vstr(fun, block, recv, state)?;
+
+    let drop = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_chomp_drop as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let drop = box_fixnum(fun, block, drop, state);
+    let len = vstr_length_fixnum(fun, block, recv, state);
+    let new_len = fun.push_insn(block, hir::Insn::FixnumSub { left: len, right: drop, state });
+    let zero = zero_fixnum(fun, block);
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, zero, new_len))
+}
+
+fn inline_string_chop(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let &[] = args else { return None; };
+    let recv = ensure_vstr(fun, block, recv, state)?;
+
+    let drop = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_chop_drop as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    });
+    let drop = box_fixnum(fun, block, drop, state);
+    let len = vstr_length_fixnum(fun, block, recv, state);
+    let new_len = fun.push_insn(block, hir::Insn::FixnumSub { left: len, right: drop, state });
+    let zero = zero_fixnum(fun, block);
+    Some(call_vstr_subseq_from_fixnums(fun, block, recv, zero, new_len))
+}
+
+fn inline_string_start_with(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_start_with as *const u8, ID!(itself), types::BoolExact)
+}
+
+fn inline_string_end_with(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_end_with as *const u8, ID!(itself), types::BoolExact)
+}
+
+fn inline_string_eql(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    if is_vstr_type(fun.type_of(recv)) {
+        return inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_eql as *const u8, ID!(itself), types::BoolExact);
+    }
+    let &[other] = args else { return None; };
+    try_inline_string_equal(fun, block, recv, other, state)
+}
+
+fn inline_string_byteindex(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let (needle, initpos) = match args {
+        [needle] => {
+            let zero = fun.push_insn(block, hir::Insn::Const { val: hir::Const::CInt64(0) });
+            (*needle, zero)
+        }
+        [needle, initpos] => {
+            if !fun.likely_a(*initpos, types::Fixnum, state) {
+                return None;
+            }
+            let initpos = fun.coerce_to(block, *initpos, types::Fixnum, state);
+            let initpos = fun.push_insn(block, hir::Insn::UnboxFixnum { val: initpos });
+            (*needle, initpos)
+        }
+        _ => return None,
+    };
+    if !fun.likely_a(needle, types::String, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let needle = fun.coerce_to(block, needle, types::String, state);
+    guard_supported_string(fun, block, needle, state);
+    guard_compatible_string(fun, block, recv, needle, state);
+
+    let offset_supported = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_byteindex_supported_offset_p as *const u8,
+        recv,
+        args: vec![initpos],
+        name: ID!(byteindex),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    guard_c_bool_true(fun, block, offset_supported, state);
+
+    Some(fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_byteindex as *const u8,
+        recv,
+        args: vec![needle, initpos],
+        name: ID!(byteindex),
+        owner: Qnil,
+        return_type: types::Fixnum.union(types::NilClass),
+        elidable: true,
+    }))
 }
 
 fn inline_module_eqq(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], _state: hir::InsnId) -> Option<hir::InsnId> {
