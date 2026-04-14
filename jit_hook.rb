@@ -9,4 +9,12 @@ class Module
       RubyVM::YJIT.send(:add_jit_hook, block)
     end
   end
+
+  # Internal helper for built-in initializations to define methods only when ZJIT is enabled.
+  # This method is removed in jit_undef.rb.
+  private def with_zjit(&block) # :nodoc:
+    if defined?(RubyVM::ZJIT)
+      RubyVM::ZJIT.send(:add_jit_hook, block)
+    end
+  end
 end

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use crate::bitset::BitSet;
 use crate::codegen::{local_size_and_idx_to_ep_offset, perf_symbol_range_start, perf_symbol_range_end};
-use crate::cruby::{IseqPtr, Qundef, RUBY_OFFSET_CFP_ISEQ, RUBY_OFFSET_CFP_JIT_RETURN, RUBY_OFFSET_CFP_PC, RUBY_OFFSET_CFP_SP, SIZEOF_VALUE_I32, vm_stack_canary};
+use crate::cruby::{IseqPtr, Qnil, Qundef, RUBY_OFFSET_CFP_ISEQ, RUBY_OFFSET_CFP_JIT_RETURN, RUBY_OFFSET_CFP_PC, RUBY_OFFSET_CFP_SP, SIZEOF_VALUE_I32, rb_jit_vstr_materialize, vm_stack_canary};
 use crate::hir::{Invariant, SideExitReason};
 use crate::hir;
 use crate::options::{TraceExits, PerfMap, get_option};
@@ -550,7 +550,9 @@ impl From<VALUE> for Opnd {
 pub struct SideExit {
     pub pc: Opnd,
     pub stack: Vec<Opnd>,
+    pub stack_vstr: Vec<bool>,
     pub locals: Vec<Opnd>,
+    pub locals_vstr: Vec<bool>,
     pub iseq: IseqPtr,
     /// If set, the side exit will call the recompile function with these arguments
     /// to profile the send and invalidate the ISEQ for recompilation.
@@ -2619,7 +2621,8 @@ impl Assembler
     pub fn compile_exits(&mut self) -> Vec<Insn> {
         /// Restore VM state (cfp->pc, cfp->sp, stack, locals) for the side exit.
         fn compile_exit_save_state(asm: &mut Assembler, exit: &SideExit) {
-            let SideExit { pc, stack, locals, iseq, .. } = exit;
+            let SideExit { pc, stack, stack_vstr, locals, locals_vstr, iseq, recompile } = exit;
+            let mut materialized_vstrs: HashMap<Opnd, Opnd> = HashMap::new();
 
             // Side exit blocks are not part of the CFG at the moment,
             // so we need to manually ensure that patchpoints get padded
@@ -2636,18 +2639,69 @@ impl Assembler
             asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_ISEQ), VALUE::from(*iseq).into());
 
             // cfp->block_code and cfp->jit_return are cleared by the caller jit_exec() or JIT_EXEC()
+            if cfg!(feature = "runtime_checks") && (recompile.is_some() || stack_vstr.iter().any(|v| *v) || locals_vstr.iter().any(|v| *v)) {
+                asm_comment!(asm, "clear cfp->jit_return");
+                asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_JIT_RETURN), 0.into());
+            }
 
             if !stack.is_empty() {
                 asm_comment!(asm, "write stack slots: {}", join_opnds(&stack, ", "));
                 for (idx, &opnd) in stack.iter().enumerate() {
-                    asm.store(Opnd::mem(64, SP, idx as i32 * SIZEOF_VALUE_I32), opnd);
+                    let slot = Opnd::mem(64, SP, idx as i32 * SIZEOF_VALUE_I32);
+                    if stack_vstr[idx] {
+                        asm.store(slot, Qnil.into());
+                    } else {
+                        asm.store(slot, opnd);
+                    }
                 }
             }
 
             if !locals.is_empty() {
                 asm_comment!(asm, "write locals: {}", join_opnds(&locals, ", "));
                 for (idx, &opnd) in locals.iter().enumerate() {
-                    asm.store(Opnd::mem(64, SP, (-local_size_and_idx_to_ep_offset(locals.len(), idx) - 1) * SIZEOF_VALUE_I32), opnd);
+                    let slot = Opnd::mem(64, SP, (-local_size_and_idx_to_ep_offset(locals.len(), idx) - 1) * SIZEOF_VALUE_I32);
+                    if locals_vstr[idx] {
+                        asm.store(slot, Qnil.into());
+                    } else {
+                        asm.store(slot, opnd);
+                    }
+                }
+            }
+
+            fn materialize_exit_vstr(
+                asm: &mut Assembler,
+                materialized_vstrs: &mut HashMap<Opnd, Opnd>,
+                home: Opnd,
+                slot: Opnd,
+            ) {
+                if let Some(&cached_slot) = materialized_vstrs.get(&home) {
+                    asm.load_into(C_ARG_OPNDS[0], cached_slot);
+                    asm.store(slot, C_ARG_OPNDS[0]);
+                    return;
+                }
+
+                let ptr = if matches!(home, Opnd::Mem(_)) {
+                    asm.lea_into(C_ARG_OPNDS[0], home);
+                    C_ARG_OPNDS[0]
+                } else {
+                    home
+                };
+                asm.ccall_into(C_RET_OPND, rb_jit_vstr_materialize as *const u8, vec![ptr]);
+                asm.store(slot, C_RET_OPND);
+                materialized_vstrs.insert(home, slot);
+            }
+
+            for (idx, &opnd) in stack.iter().enumerate() {
+                if stack_vstr[idx] {
+                    let slot = Opnd::mem(64, SP, idx as i32 * SIZEOF_VALUE_I32);
+                    materialize_exit_vstr(asm, &mut materialized_vstrs, opnd, slot);
+                }
+            }
+
+            for (idx, &opnd) in locals.iter().enumerate() {
+                if locals_vstr[idx] {
+                    let slot = Opnd::mem(64, SP, (-local_size_and_idx_to_ep_offset(locals.len(), idx) - 1) * SIZEOF_VALUE_I32);
+                    materialize_exit_vstr(asm, &mut materialized_vstrs, opnd, slot);
                 }
             }
         }
@@ -2668,16 +2722,6 @@ impl Assembler
             // compile_exit_save_state because it clobbers caller-saved registers
             // that may hold stack/local operands we need to save.
             if let Some(recompile) = &exit.recompile {
-                if cfg!(feature = "runtime_checks") {
-                    // Clear jit_return to fully materialize the frame. This must happen
-                    // before any C call in the exit path (e.g. exit_recompile)
-                    // because that C call can trigger GC, which walks the stack and would
-                    // hit the CFP_JIT_RETURN assertion if jit_return still holds the
-                    // runtime_checks poison value (JIT_RETURN_POISON).
-                    asm_comment!(asm, "clear cfp->jit_return");
-                    asm.store(Opnd::mem(64, CFP, RUBY_OFFSET_CFP_JIT_RETURN), 0.into());
-                }
-
                 use crate::codegen::exit_recompile;
                 asm_comment!(asm, "profile and maybe recompile");
                 asm_ccall!(asm, exit_recompile,

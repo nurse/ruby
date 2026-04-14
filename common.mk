@@ -1194,6 +1194,7 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/kernel.rb \
 		$(srcdir)/pathname_builtin.rb \
 		$(srcdir)/ractor.rb \
+		$(srcdir)/string.rb \
 		$(srcdir)/symbol.rb \
 		$(srcdir)/timev.rb \
 		$(srcdir)/thread_sync.rb \
@@ -1206,6 +1207,8 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/zjit.rb \
 		$(empty)
 BUILTIN_RB_INCS = $(BUILTIN_RB_SRCS:.rb=.rbinc)
+
+string.$(OBJEXT): string.rbinc
 
 common-srcs: $(srcs_vpath)parse.c $(srcs_vpath)lex.c $(srcs_vpath)enc/trans/newline.c $(srcs_vpath)id.c \
 	     $(BUILTIN_RB_INCS) \

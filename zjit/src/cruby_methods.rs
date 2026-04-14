@@ -25,6 +25,77 @@ unsafe extern "C" {
 pub struct Annotations {
     cfuncs: HashMap<*mut c_void, FnProperties>,
     builtin_funcs: HashMap<*mut c_void, FnProperties>,
+    iseq_methods: HashMap<IseqPtr, FnProperties>,
+    vstr_method_ids: HashMap<ID, VStrProducerDescriptor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VStrProducerShape {
+    DeletePrefix,
+    DropTail(VStrDropTailKind),
+    TrimLeft,
+    TrimRight,
+    TrimBoth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VStrDropTailKind {
+    DeleteSuffix,
+    Chomp,
+    Chop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VStrCallGuard {
+    StringArg,
+    RestMustBeEmpty,
+    MissingOptionalArgOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum VStrMeasureOp {
+    DeletePrefixDrop = 0,
+    DeleteSuffixDrop = 1,
+    TrimLeftBeg = 2,
+    TrimRightEnd = 3,
+    ChompDrop = 4,
+    ChopDrop = 5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VStrScalarSource {
+    Zero,
+    Length,
+    Measure(VStrMeasureOp),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VStrScalarExpr {
+    pub lhs: VStrScalarSource,
+    pub rhs: Option<VStrScalarSource>,
+}
+
+impl VStrScalarExpr {
+    const fn source(lhs: VStrScalarSource) -> Self {
+        Self { lhs, rhs: None }
+    }
+
+    const fn sub(lhs: VStrScalarSource, rhs: VStrScalarSource) -> Self {
+        Self { lhs, rhs: Some(rhs) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VStrProducerPlan {
+    pub offset: VStrScalarExpr,
+    pub len: VStrScalarExpr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VStrProducerDescriptor {
+    pub shape: VStrProducerShape,
+    pub call_guard: VStrCallGuard,
 }
 
 /// Runtime behaviors of C functions that implement a Ruby method
@@ -38,6 +109,7 @@ pub struct FnProperties {
     pub return_type: Type,
     /// Whether it's legal to remove the call if the result is unused
     pub elidable: bool,
+    pub vstr_producer: Option<VStrProducerDescriptor>,
     pub inline: fn(&mut hir::Function, hir::BlockId, hir::InsnId, &[hir::InsnId], hir::InsnId) -> Option<hir::InsnId>,
 }
 
@@ -49,7 +121,56 @@ impl Default for FnProperties {
             leaf: false,
             return_type: types::BasicObject,
             elidable: false,
+            vstr_producer: None,
             inline: no_inline,
+        }
+    }
+}
+
+impl VStrProducerDescriptor {
+    pub fn matches_callsite(self, fun: &hir::Function, args: &[hir::InsnId], state: hir::InsnId) -> bool {
+        match self.call_guard {
+            VStrCallGuard::StringArg => {
+                let [arg] = args else { return false; };
+                fun.likely_a(*arg, types::String, state)
+            }
+            VStrCallGuard::RestMustBeEmpty | VStrCallGuard::MissingOptionalArgOnly => args.is_empty(),
+        }
+    }
+
+    pub fn lowering_plan(self) -> VStrProducerPlan {
+        use VStrMeasureOp as Op;
+        use VStrScalarSource as Src;
+
+        match self.shape {
+            VStrProducerShape::DeletePrefix => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Measure(Op::DeletePrefixDrop)),
+                len: VStrScalarExpr::sub(Src::Length, Src::Measure(Op::DeletePrefixDrop)),
+            },
+            VStrProducerShape::DropTail(VStrDropTailKind::DeleteSuffix) => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Zero),
+                len: VStrScalarExpr::sub(Src::Length, Src::Measure(Op::DeleteSuffixDrop)),
+            },
+            VStrProducerShape::TrimLeft => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Measure(Op::TrimLeftBeg)),
+                len: VStrScalarExpr::sub(Src::Length, Src::Measure(Op::TrimLeftBeg)),
+            },
+            VStrProducerShape::TrimRight => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Zero),
+                len: VStrScalarExpr::source(Src::Measure(Op::TrimRightEnd)),
+            },
+            VStrProducerShape::TrimBoth => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Measure(Op::TrimLeftBeg)),
+                len: VStrScalarExpr::sub(Src::Measure(Op::TrimRightEnd), Src::Measure(Op::TrimLeftBeg)),
+            },
+            VStrProducerShape::DropTail(VStrDropTailKind::Chomp) => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Zero),
+                len: VStrScalarExpr::sub(Src::Length, Src::Measure(Op::ChompDrop)),
+            },
+            VStrProducerShape::DropTail(VStrDropTailKind::Chop) => VStrProducerPlan {
+                offset: VStrScalarExpr::source(Src::Zero),
+                len: VStrScalarExpr::sub(Src::Length, Src::Measure(Op::ChopDrop)),
+            },
         }
     }
 }
@@ -70,6 +191,18 @@ impl Annotations {
     pub fn get_builtin_properties(&self, bf: *const rb_builtin_function) -> Option<FnProperties> {
         let func_ptr = unsafe { (*bf).func_ptr as *mut c_void };
         self.builtin_funcs.get(&func_ptr).copied()
+    }
+
+    pub fn get_iseq_properties(&self, iseq: IseqPtr) -> Option<FnProperties> {
+        self.iseq_methods.get(&iseq).copied()
+    }
+
+    pub fn get_iseq_vstr_producer(&self, iseq: IseqPtr) -> Option<VStrProducerDescriptor> {
+        self.get_iseq_properties(iseq).and_then(|props| props.vstr_producer)
+    }
+
+    pub fn get_vstr_method_descriptor(&self, method_id: ID) -> Option<VStrProducerDescriptor> {
+        self.vstr_method_ids.get(&method_id).copied()
     }
 }
 
@@ -156,11 +289,35 @@ fn annotate_builtin_method(props_map: &mut HashMap<*mut c_void, FnProperties>, c
     }
 }
 
+fn lookup_iseq_method(class: VALUE, method_name: &'static str) -> Option<(IseqPtr, ID)> {
+    unsafe {
+        let method_id = rb_intern2(method_name.as_ptr().cast(), method_name.len().try_into().unwrap());
+        let method = rb_method_entry_at(class, method_id);
+        if method.is_null() {
+            return None;
+        }
+
+        let cme = method.cast::<rb_callable_method_entry_t>();
+        if get_cme_def_type(cme) != VM_METHOD_TYPE_ISEQ {
+            return None;
+        }
+
+        let iseq = get_def_iseq_ptr((*cme).def);
+        if iseq.is_null() {
+            return None;
+        }
+
+        Some((iseq, method_id))
+    }
+}
+
 /// Gather annotations. Run this right after boot since the annotations
 /// are about the stock versions of methods.
 pub fn init() -> Annotations {
     let cfuncs = &mut HashMap::new();
     let builtin_funcs = &mut HashMap::new();
+    let iseq_methods = &mut HashMap::new();
+    let vstr_method_ids = &mut HashMap::new();
 
     macro_rules! annotate {
         ($module:ident, $method_name:literal, $inline:ident) => {
@@ -221,6 +378,10 @@ pub fn init() -> Annotations {
     annotate!(rb_cString, "empty?", inline_string_empty_p, types::BoolExact, no_gc, leaf, elidable);
     annotate!(rb_cString, "<<", inline_string_append);
     annotate!(rb_cString, "==", inline_string_eq);
+    annotate!(rb_cString, "eql?", inline_string_eql, types::BoolExact, no_gc, leaf, elidable);
+    annotate!(rb_cString, "start_with?", inline_string_start_with, types::BoolExact);
+    annotate!(rb_cString, "end_with?", inline_string_end_with, types::BoolExact);
+    annotate!(rb_cString, "byteindex", inline_string_byteindex, types::Fixnum.union(types::NilClass));
     // Not elidable; has a side effect of setting the encoding if ENC_CODERANGE_UNKNOWN.
     // TOOD(max): Turn this into a load/compare. Will need to side-exit or do the full call if
     // ENC_CODERANGE_UNKNOWN.
@@ -286,11 +447,282 @@ pub fn init() -> Annotations {
     Annotations {
         cfuncs: std::mem::take(cfuncs),
         builtin_funcs: std::mem::take(builtin_funcs),
+        iseq_methods: std::mem::take(iseq_methods),
+        vstr_method_ids: std::mem::take(vstr_method_ids),
+    }
+}
+
+pub fn init_zjit_iseq_methods(annotations: &mut Annotations) {
+    let iseq_methods = &mut annotations.iseq_methods;
+    let vstr_method_ids = &mut annotations.vstr_method_ids;
+    iseq_methods.clear();
+    vstr_method_ids.clear();
+
+    const METHODS: [(&str, VStrProducerDescriptor); 7] = [
+        ("delete_prefix", VStrProducerDescriptor { shape: VStrProducerShape::DeletePrefix, call_guard: VStrCallGuard::StringArg }),
+        ("delete_suffix", VStrProducerDescriptor { shape: VStrProducerShape::DropTail(VStrDropTailKind::DeleteSuffix), call_guard: VStrCallGuard::StringArg }),
+        ("lstrip", VStrProducerDescriptor { shape: VStrProducerShape::TrimLeft, call_guard: VStrCallGuard::RestMustBeEmpty }),
+        ("rstrip", VStrProducerDescriptor { shape: VStrProducerShape::TrimRight, call_guard: VStrCallGuard::RestMustBeEmpty }),
+        ("strip", VStrProducerDescriptor { shape: VStrProducerShape::TrimBoth, call_guard: VStrCallGuard::RestMustBeEmpty }),
+        ("chomp", VStrProducerDescriptor { shape: VStrProducerShape::DropTail(VStrDropTailKind::Chomp), call_guard: VStrCallGuard::MissingOptionalArgOnly }),
+        ("chop", VStrProducerDescriptor { shape: VStrProducerShape::DropTail(VStrDropTailKind::Chop), call_guard: VStrCallGuard::RestMustBeEmpty }),
+    ];
+
+    for (method_name, desc) in METHODS {
+        let Some((iseq, method_id)) = lookup_iseq_method(unsafe { rb_cString }, method_name) else {
+            continue;
+        };
+        let mut props = FnProperties::default();
+        props.return_type = types::StringExact;
+        props.vstr_producer = Some(desc);
+        iseq_methods.insert(iseq, props);
+        vstr_method_ids.insert(method_id, desc);
     }
 }
 
 fn no_inline(_fun: &mut hir::Function, _block: hir::BlockId, _recv: hir::InsnId, _args: &[hir::InsnId], _state: hir::InsnId) -> Option<hir::InsnId> {
     None
+}
+
+pub(crate) fn inline_annotated_iseq(props: FnProperties, fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    if let Some(desc) = props.vstr_producer {
+        return inline_vstr_producer(fun, block, recv, args, state, desc);
+    }
+
+    (props.inline)(fun, block, recv, args, state)
+}
+
+fn is_vstr_type(ty: Type) -> bool {
+    !ty.bit_equal(types::Empty) && ty.is_subtype(types::VStr)
+}
+
+fn ensure_vstr(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, state: hir::InsnId) -> Option<hir::InsnId> {
+    match fun.find(recv) {
+        hir::Insn::GuardType { val, .. }
+        | hir::Insn::GuardTypeNot { val, .. }
+        | hir::Insn::RefineType { val, .. } => {
+            if let Some(recv) = ensure_vstr(fun, block, val, state) {
+                return Some(recv);
+            }
+        }
+        _ => {}
+    }
+
+    if is_vstr_type(fun.type_of(recv)) {
+        return Some(recv);
+    }
+    if !fun.likely_a(recv, types::StringExact, state) {
+        return None;
+    }
+
+    let recv = fun.coerce_to(block, recv, types::StringExact, state);
+    let enabled = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_enabled_p as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, enabled, state);
+
+    let supported = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_supported_string_p as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, supported, state);
+
+    let out = fun.push_insn(block, hir::Insn::VStrAlloc);
+    let flags = fun.push_insn(block, hir::Insn::Const { val: hir::Const::CUInt64(0) });
+    Some(fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_from_string as *const u8,
+        recv: out,
+        args: vec![recv, flags],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::VStr,
+        elidable: false,
+    }))
+}
+
+fn zero_cint64(fun: &mut hir::Function, block: hir::BlockId) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::Const { val: hir::Const::CInt64(0) })
+}
+
+fn vstr_length(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_length as *const u8,
+        recv,
+        args: vec![],
+        name: ID!(bytesize),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    })
+}
+
+fn call_vstr_subseq(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, off: hir::InsnId, len: hir::InsnId) -> hir::InsnId {
+    let out = fun.push_insn(block, hir::Insn::VStrAlloc);
+    fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_subseq as *const u8,
+        recv: out,
+        args: vec![recv, off, len],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::VStr,
+        elidable: false,
+    })
+}
+
+fn vstr_scalar_helper(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, cfunc: *const u8, args: Vec<hir::InsnId>) -> hir::InsnId {
+    fun.push_insn(block, hir::Insn::CCall {
+        cfunc,
+        recv,
+        args,
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CInt64,
+        elidable: true,
+    })
+}
+
+fn vstr_measure(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, op: VStrMeasureOp, arg: Option<hir::InsnId>) -> hir::InsnId {
+    let op = fun.push_insn(block, hir::Insn::Const { val: hir::Const::CInt64(op as i64) });
+    match arg {
+        Some(arg) => vstr_scalar_helper(fun, block, recv, rb_jit_vstr_measure1 as *const u8, vec![arg, op]),
+        None => vstr_scalar_helper(fun, block, recv, rb_jit_vstr_measure0 as *const u8, vec![op]),
+    }
+}
+
+fn eval_vstr_scalar_source(
+    fun: &mut hir::Function,
+    block: hir::BlockId,
+    recv: hir::InsnId,
+    measure_arg: Option<hir::InsnId>,
+    source: VStrScalarSource,
+    length: &mut Option<hir::InsnId>,
+    measures: &mut HashMap<VStrMeasureOp, hir::InsnId>,
+) -> hir::InsnId {
+    match source {
+        VStrScalarSource::Zero => zero_cint64(fun, block),
+        VStrScalarSource::Length => *length.get_or_insert_with(|| vstr_length(fun, block, recv)),
+        VStrScalarSource::Measure(op) => *measures.entry(op).or_insert_with(|| vstr_measure(fun, block, recv, op, measure_arg)),
+    }
+}
+
+fn eval_vstr_scalar_expr(
+    fun: &mut hir::Function,
+    block: hir::BlockId,
+    recv: hir::InsnId,
+    measure_arg: Option<hir::InsnId>,
+    expr: VStrScalarExpr,
+    length: &mut Option<hir::InsnId>,
+    measures: &mut HashMap<VStrMeasureOp, hir::InsnId>,
+) -> hir::InsnId {
+    let left = eval_vstr_scalar_source(fun, block, recv, measure_arg, expr.lhs, length, measures);
+    match expr.rhs {
+        Some(rhs) => {
+            let right = eval_vstr_scalar_source(fun, block, recv, measure_arg, rhs, length, measures);
+            fun.push_insn(block, hir::Insn::IntSub { left, right })
+        }
+        None => left,
+    }
+}
+
+fn inline_vstr_string_consumer(
+    fun: &mut hir::Function,
+    block: hir::BlockId,
+    recv: hir::InsnId,
+    args: &[hir::InsnId],
+    state: hir::InsnId,
+    cfunc: *const u8,
+    name: ID,
+    return_type: Type,
+) -> Option<hir::InsnId> {
+    let &[other] = args else { return None; };
+    if !fun.likely_a(other, types::String, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let other = fun.coerce_to(block, other, types::String, state);
+    let supported = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_supported_string_p as *const u8,
+        recv: other,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, supported, state);
+    let compatible = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_compatible_string_p as *const u8,
+        recv,
+        args: vec![other],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, compatible, state);
+    Some(fun.push_insn(block, hir::Insn::CCall {
+        cfunc,
+        recv,
+        args: vec![other],
+        name,
+        owner: Qnil,
+        return_type,
+        elidable: true,
+    }))
+}
+
+fn inline_vstr_producer(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId, desc: VStrProducerDescriptor) -> Option<hir::InsnId> {
+    if !desc.matches_callsite(fun, args, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let measure_arg = match desc.call_guard {
+        VStrCallGuard::StringArg => {
+            let other = fun.coerce_to(block, args[0], types::String, state);
+            let supported = fun.push_insn(block, hir::Insn::CCall {
+                cfunc: rb_jit_vstr_supported_string_p as *const u8,
+                recv: other,
+                args: vec![],
+                name: ID!(itself),
+                owner: Qnil,
+                return_type: types::CBool,
+                elidable: true,
+            });
+            fun.guard_c_bool_true(block, supported, state);
+            let compatible = fun.push_insn(block, hir::Insn::CCall {
+                cfunc: rb_jit_vstr_compatible_string_p as *const u8,
+                recv,
+                args: vec![other],
+                name: ID!(itself),
+                owner: Qnil,
+                return_type: types::CBool,
+                elidable: true,
+            });
+            fun.guard_c_bool_true(block, compatible, state);
+            Some(other)
+        }
+        VStrCallGuard::RestMustBeEmpty | VStrCallGuard::MissingOptionalArgOnly => None,
+    };
+
+    let plan = desc.lowering_plan();
+    let mut length = None;
+    let mut measures = HashMap::new();
+    let off = eval_vstr_scalar_expr(fun, block, recv, measure_arg, plan.offset, &mut length, &mut measures);
+    let len = eval_vstr_scalar_expr(fun, block, recv, measure_arg, plan.len, &mut length, &mut measures);
+    Some(call_vstr_subseq(fun, block, recv, off, len))
 }
 
 fn inline_string_to_s(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
@@ -442,6 +874,11 @@ fn inline_hash_aset(fun: &mut hir::Function, block: hir::BlockId, recv: hir::Ins
 }
 
 fn inline_string_bytesize(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    if args.is_empty() && is_vstr_type(fun.type_of(recv)) {
+        let len = vstr_length(fun, block, recv);
+        let result = fun.push_insn(block, hir::Insn::BoxFixnum { val: len, state });
+        return Some(result);
+    }
     if args.is_empty() && fun.likely_a(recv, types::String, state) {
         let recv = fun.coerce_to(block, recv, types::String, state);
         let len = fun.push_insn(block, hir::Insn::LoadField {
@@ -519,6 +956,13 @@ fn inline_string_setbyte(fun: &mut hir::Function, block: hir::BlockId, recv: hir
 
 fn inline_string_empty_p(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], _state: hir::InsnId) -> Option<hir::InsnId> {
     let &[] = args else { return None; };
+    if is_vstr_type(fun.type_of(recv)) {
+        let len = vstr_length(fun, block, recv);
+        let zero = fun.push_insn(block, hir::Insn::Const { val: hir::Const::CInt64(0) });
+        let is_zero = fun.push_insn(block, hir::Insn::IsBitEqual { left: len, right: zero });
+        let result = fun.push_insn(block, hir::Insn::BoxBool { val: is_zero });
+        return Some(result);
+    }
     let len = fun.push_insn(block, hir::Insn::LoadField {
         recv,
         id: ID!(len),
@@ -562,7 +1006,89 @@ fn try_inline_string_equal(fun: &mut hir::Function, block: hir::BlockId, recv: h
 
 fn inline_string_eq(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
     let &[other] = args else { return None; };
+    if is_vstr_type(fun.type_of(recv)) {
+        return inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_equal as *const u8, ID!(itself), types::BoolExact);
+    }
     try_inline_string_equal(fun, block, recv, other, state)
+}
+
+fn inline_string_start_with(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_start_with as *const u8, ID!(itself), types::BoolExact)
+}
+
+fn inline_string_end_with(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_end_with as *const u8, ID!(itself), types::BoolExact)
+}
+
+fn inline_string_eql(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    if is_vstr_type(fun.type_of(recv)) {
+        return inline_vstr_string_consumer(fun, block, recv, args, state, rb_jit_vstr_eql as *const u8, ID!(itself), types::BoolExact);
+    }
+    let &[other] = args else { return None; };
+    try_inline_string_equal(fun, block, recv, other, state)
+}
+
+fn inline_string_byteindex(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], state: hir::InsnId) -> Option<hir::InsnId> {
+    let (needle, initpos) = match args {
+        [needle] => {
+            let zero = fun.push_insn(block, hir::Insn::Const { val: hir::Const::CInt64(0) });
+            (*needle, zero)
+        }
+        [needle, initpos] => {
+            if !fun.likely_a(*initpos, types::Fixnum, state) {
+                return None;
+            }
+            let initpos = fun.coerce_to(block, *initpos, types::Fixnum, state);
+            let initpos = fun.push_insn(block, hir::Insn::UnboxFixnum { val: initpos });
+            (*needle, initpos)
+        }
+        _ => return None,
+    };
+    if !fun.likely_a(needle, types::String, state) {
+        return None;
+    }
+
+    let recv = ensure_vstr(fun, block, recv, state)?;
+    let needle = fun.coerce_to(block, needle, types::String, state);
+    let supported = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_supported_string_p as *const u8,
+        recv: needle,
+        args: vec![],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, supported, state);
+    let compatible = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_compatible_string_p as *const u8,
+        recv,
+        args: vec![needle],
+        name: ID!(itself),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, compatible, state);
+    let offset_supported = fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_byteindex_supported_offset_p as *const u8,
+        recv,
+        args: vec![initpos],
+        name: ID!(byteindex),
+        owner: Qnil,
+        return_type: types::CBool,
+        elidable: true,
+    });
+    fun.guard_c_bool_true(block, offset_supported, state);
+    Some(fun.push_insn(block, hir::Insn::CCall {
+        cfunc: rb_jit_vstr_byteindex as *const u8,
+        recv,
+        args: vec![needle, initpos],
+        name: ID!(byteindex),
+        owner: Qnil,
+        return_type: types::Fixnum.union(types::NilClass),
+        elidable: true,
+    }))
 }
 
 fn inline_module_eqq(fun: &mut hir::Function, block: hir::BlockId, recv: hir::InsnId, args: &[hir::InsnId], _state: hir::InsnId) -> Option<hir::InsnId> {

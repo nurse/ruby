@@ -224,6 +224,310 @@ class TestZJIT < Test::Unit::TestCase
     }, call_threshold: 2
   end
 
+  def test_virtual_string_slice_chain
+    assert_compiles '[true, false]', <<~RUBY, call_threshold: 2
+      def test(s) = s.strip.delete_prefix("https://").end_with?("/")
+      test("  https://example.com/\\n")
+      [test("  https://example.com/\\n"), test("http://example.com")]
+    RUBY
+  end
+
+  def test_virtual_string_slice_dump_hir
+    out, err, status = eval_with_jit(<<~RUBY, call_threshold: 2, extra_args: ['--zjit-dump-hir=all'])
+      RubyVM::ZJIT.assert_compiles
+
+      def test(s) = s.strip.delete_prefix("https://").end_with?("/")
+      test("  https://example.com/\\n")
+      ret = [test("  https://example.com/\\n"), test("http://example.com")]
+      p ret
+      ret
+    RUBY
+
+    assert_success(out, err, status)
+    assert_includes(out, "[true, false]")
+
+    hir_dump = [out, err].join("\n")
+    test_hir = hir_dump.split(/^Optimized HIR:\n/).find { _1.include?("fn test@") }
+    assert_not_nil(test_hir, hir_dump)
+    assert_includes(test_hir, "VStrAlloc")
+    assert_includes(test_hir, "rb_jit_vstr_from_string")
+    assert_includes(test_hir, "rb_jit_vstr_measure0")
+    assert_includes(test_hir, "rb_jit_vstr_measure1")
+    assert_includes(test_hir, "rb_jit_vstr_subseq")
+    assert_includes(test_hir, "rb_jit_vstr_end_with")
+    assert_includes(test_hir, "IntSub")
+    refute_includes(test_hir, "FixnumSub")
+    refute_includes(test_hir, "rb_jit_vstr_lstrip_beg")
+    refute_includes(test_hir, "rb_jit_vstr_rstrip_end")
+    refute_includes(test_hir, "rb_jit_vstr_delete_prefix_len")
+    refute_includes(test_hir, ":String#strip")
+    refute_includes(test_hir, ":String#delete_prefix")
+    refute_includes(test_hir, ":String#end_with?")
+    refute_includes(test_hir, "rb_jit_vstr_strip")
+  end
+
+  def test_virtual_string_slice_materializes_fresh_string
+    assert_compiles '[true, false]', <<~RUBY, call_threshold: 2
+      def test(s) = s.delete_prefix("x")
+      src = +"abc"
+      test(src)
+      out = test(src)
+      [out == src, out.equal?(src)]
+    RUBY
+  end
+
+  def test_virtual_string_slice_delete_suffix_materializes_fresh_string
+    assert_compiles '[true, false]', <<~RUBY, call_threshold: 2
+      def test(s) = s.delete_suffix("x")
+      src = +"abc"
+      test(src)
+      out = test(src)
+      [out == src, out.equal?(src)]
+    RUBY
+  end
+
+  def test_virtual_string_slice_materializes_before_unknown_send
+    assert_compiles 'String', <<~RUBY, call_threshold: 2
+      def sink(x) = x.class
+      def test(s) = sink(s.strip)
+      test("  a\\n")
+      test("  b\\n")
+    RUBY
+  end
+
+  def test_virtual_string_slice_argful_fallback_semantics
+    assert_compiles '[true, true, true, true, true, true]', <<~RUBY, call_threshold: 2
+      def test
+        a_src = +"  abc"
+        b_src = +"abc  "
+        c_src = +"  abc  "
+        d_src = +"abc\\n"
+
+        a = a_src.lstrip(" ")
+        b = b_src.rstrip(" ")
+        c = c_src.strip(" ")
+        d = d_src.chomp(nil)
+
+        [
+          a == "abc",
+          b == "abc",
+          c == "abc",
+          d == "abc\\n",
+          !a.equal?(a_src),
+          !d.equal?(d_src),
+        ]
+      end
+
+      test
+      test
+    RUBY
+  end
+
+  def test_virtual_string_slice_selector_and_separator_fallbacks
+    assert_compiles '[true, true, true, true, true]', <<~RUBY, call_threshold: 2
+      def test
+        stripped = +"---abc+++".strip("-+")
+        lstripped = +"---abc+++".lstrip("-")
+        rstripped = +"---abc+++".rstrip("+")
+        chomped_src = +"abc!!!"
+        chomped = chomped_src.chomp("!!")
+
+        [
+          stripped == "abc",
+          lstripped == "abc+++",
+          rstripped == "---abc",
+          chomped == "abc!",
+          !chomped.equal?(chomped_src),
+        ]
+      end
+
+      test
+      test
+    RUBY
+  end
+
+  def test_virtual_string_slice_preserves_alias_identity_after_local_assignment
+    assert_compiles 'true', <<~RUBY, call_threshold: 2
+      def sink(a, b) = a.equal?(b)
+
+      def test(s)
+        x = s.strip
+        y = x
+        sink(x, y)
+      end
+
+      test("  a\\n")
+      test("  b\\n")
+    RUBY
+  end
+
+  def test_virtual_string_slice_preserves_alias_identity_on_side_exit
+    assert_compiles 'true', <<~RUBY, call_threshold: 2
+      def compare(a, b) = a.equal?(b)
+
+      def test(s)
+        x = s.strip
+        y = x
+        RubyVM::ZJIT.induce_side_exit!
+        compare(x, y)
+      end
+
+      test("  a\\n")
+      test("  b\\n")
+    RUBY
+  end
+
+  def test_virtual_string_slice_preserves_object_id_after_local_assignment
+    assert_compiles 'true', <<~RUBY, call_threshold: 2
+      def test(s)
+        x = s.strip
+        a = x.object_id
+        b = x.object_id
+        a == b
+      end
+
+      test("  a\\n")
+      test("  b\\n")
+    RUBY
+  end
+
+  def test_virtual_string_slice_materializes_before_base_mutation
+    assert_compiles '"abc"', <<~RUBY, call_threshold: 2
+      def test(s)
+        x = s.strip
+        s.setbyte(1, 120)
+        x
+      end
+
+      test(+" abc \\n")
+      test(+" abc \\n")
+    RUBY
+  end
+
+  def test_virtual_string_slice_materializes_before_branch_merge
+    assert_compiles 'true', <<~RUBY, call_threshold: 2
+      def test(s, t, cond)
+        x = cond ? s.strip : t.strip
+        a = x.object_id
+        b = x.object_id
+        a == b
+      end
+
+      test("  a\\n", "  b\\n", true)
+      test("  a\\n", "  b\\n", false)
+    RUBY
+  end
+
+  def test_virtual_string_slice_side_exit_materializes
+    assert_compiles '"b"', <<~RUBY, call_threshold: 2
+      def test(s)
+        out = s.strip
+        ::RubyVM::ZJIT.induce_side_exit!
+        out
+      end
+
+      test("  a\\n")
+      test("  b\\n")
+    RUBY
+  end
+
+  def test_virtual_string_slice_dump_hir_materializes_before_local_escape
+    out, err, status = eval_with_jit(<<~RUBY, call_threshold: 2, extra_args: ['--zjit-dump-hir=all'])
+      RubyVM::ZJIT.assert_compiles
+
+      def test(s)
+        x = s.strip
+        [x.object_id, x.object_id]
+      end
+
+      test("  a\\n")
+      ret = test("  b\\n")
+      p(ret[0] == ret[1])
+      ret
+    RUBY
+
+    assert_success(out, err, status)
+    assert_includes(out, "true")
+
+    hir_dump = [out, err].join("\n")
+    test_hir = hir_dump.split(/^Optimized HIR:\n/).find { _1.include?("fn test@") }
+    assert_not_nil(test_hir, hir_dump)
+    assert_includes(test_hir, "VStrAlloc")
+    assert_includes(test_hir, "MaterializeVStr")
+  end
+
+  def test_virtual_string_slice_dump_hir_materializes_before_ivar_write
+    out, err, status = eval_with_jit(<<~RUBY, call_threshold: 2, extra_args: ['--zjit-dump-hir=all'])
+      RubyVM::ZJIT.assert_compiles
+
+      class Box
+        attr_reader :x
+
+        def test(s)
+          @x = s.strip
+        end
+      end
+
+      box = Box.new
+      box.test("  a\\n")
+      out = box.test("  b\\n")
+      p [box.x == "b", box.x.equal?(out)]
+    RUBY
+
+    assert_success(out, err, status)
+    assert_includes(out, "[true, true]")
+
+    hir_dump = [out, err].join("\n")
+    test_hir = hir_dump.split(/^Optimized HIR:\n/).find { _1.include?("fn test@") }
+    assert_not_nil(test_hir, hir_dump)
+    assert_includes(test_hir, "VStrAlloc")
+    assert_includes(test_hir, "MaterializeVStr")
+    assert_includes(test_hir, "StoreField")
+    assert_includes(test_hir, "WriteBarrier")
+  end
+
+  def test_virtual_string_slice_does_not_virtualize_temporary_receiver
+    assert_compiles '"abc"', <<~RUBY, call_threshold: 2
+      def test(key, prefix)
+        key.to_s.delete_prefix(prefix)
+      end
+
+      3.times { test(:prefix_abc, "prefix_") }
+      test(:prefix_abc, "prefix_")
+    RUBY
+  end
+
+  def test_virtual_string_slice_disabled_during_allocation_tracing
+    assert_runs '[true, true]', <<~RUBY, call_threshold: 2
+      require "objspace"
+
+      def test(s)
+        s.strip
+      end
+
+      ObjectSpace.trace_object_allocations_start
+      test("  a\\n")
+      out = test("  b\\n")
+      [
+        !ObjectSpace.allocation_sourcefile(out).nil?,
+        !ObjectSpace.allocation_sourceline(out).nil?,
+      ]
+    RUBY
+  end
+
+  def test_virtual_string_slice_reduces_allocations
+    omit("GC.auto_compact= support is required for this test") unless GC.respond_to?(:auto_compact=)
+
+    enabled = measure_virtual_string_slice_allocations(auto_compact: false)
+    disabled = measure_virtual_string_slice_allocations(auto_compact: true)
+    message = "enabled=#{enabled.inspect}\ndisabled=#{disabled.inspect}"
+
+    assert_equal([true, false], enabled.fetch(:result), message)
+    assert_equal(enabled.fetch(:result), disabled.fetch(:result), message)
+    assert_operator(enabled.fetch(:allocations), :<, disabled.fetch(:allocations), message)
+    assert_operator(disabled.fetch(:allocations) - enabled.fetch(:allocations), :>, 50_000, message)
+  end
+
   # tool/ruby_vm/views/*.erb relies on the zjit instructions a) being contiguous and
   # b) being reliably ordered after all the other instructions.
   def test_instruction_order
@@ -535,6 +839,34 @@ class TestZJIT < Test::Unit::TestCase
     message << "\nstdout:\n```\n#{out}```\n" unless out.empty?
     message << "\nstderr:\n```\n#{err}```\n" unless err.empty?
     assert status.success?, message
+  end
+
+  def measure_virtual_string_slice_allocations(auto_compact:, iterations: 100_000)
+    pipe_fd = 3
+    script = <<~RUBY
+      GC.auto_compact = #{auto_compact}
+
+      def test(s) = s.strip.delete_prefix("https://").end_with?("/")
+
+      inputs = ["  https://example.com/\\n", "http://example.com"].freeze
+      4.times { inputs.each { |s| test(s) } }
+      result = [test(inputs[0]), test(inputs[1])]
+
+      GC.start
+      GC.disable
+      before = GC.stat[:total_allocated_objects]
+      #{iterations}.times { |i| test(inputs[i & 1]) }
+      after = GC.stat[:total_allocated_objects]
+
+      IO.open(#{pipe_fd}).write(Marshal.dump({
+        result:,
+        allocations: after - before,
+      }))
+    RUBY
+
+    out, err, status, result = eval_with_jit(script, call_threshold: 2, timeout: 5000, pipe_fd:)
+    assert_success(out, err, status)
+    Marshal.load(result)
   end
 
   def script_shell_encode(s)

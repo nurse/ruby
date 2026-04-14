@@ -186,6 +186,8 @@ RUBY_ATTR_MALLOC void *ruby_mimcalloc(size_t num, size_t size);
 void ruby_mimfree(void *ptr);
 void rb_gc_prepare_heap(void);
 void rb_objspace_set_event_hook(const rb_event_flag_t event);
+bool rb_gc_event_hook_required_p(rb_event_flag_t event);
+bool rb_gc_auto_compact_p(void);
 VALUE rb_objspace_gc_enable(void *objspace);
 VALUE rb_objspace_gc_disable(void *objspace);
 void ruby_gc_set_params(void);

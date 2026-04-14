@@ -717,6 +717,13 @@ rb_gc_impl_during_gc_p(void *objspace_ptr)
     return objspace->world_stopped;
 }
 
+bool
+rb_gc_impl_auto_compact_p(void *objspace_ptr)
+{
+    (void)objspace_ptr;
+    return false;
+}
+
 static void
 rb_gc_impl_prepare_heap_i(MMTk_ObjectReference obj, void *d)
 {

@@ -89,7 +89,7 @@
 #![allow(unused_imports)]
 
 use std::convert::From;
-use std::ffi::{c_void, CString, CStr};
+use std::ffi::{c_long, c_void, CString, CStr};
 use std::fmt::{Debug, Display, Formatter};
 use std::os::raw::{c_char, c_int, c_uint};
 use std::panic::{catch_unwind, UnwindSafe};
@@ -166,6 +166,21 @@ unsafe extern "C" {
     pub fn rb_vm_push_cfunc_frame(cme: *const rb_callable_method_entry_t, recv_idx: c_int);
     pub fn rb_obj_class(klass: VALUE) -> VALUE;
     pub fn rb_vm_objtostring(reg_cfp: CfpPtr, recv: VALUE, cd: *const rb_call_data) -> VALUE;
+    pub fn rb_jit_vstr_enabled_p(ignored: VALUE) -> bool;
+    pub fn rb_jit_vstr_supported_string_p(str: VALUE) -> bool;
+    pub fn rb_jit_vstr_compatible_string_p(slice: *const c_void, other: VALUE) -> bool;
+    pub fn rb_jit_vstr_byteindex_supported_offset_p(slice: *const c_void, initpos: c_long) -> bool;
+    pub fn rb_jit_vstr_from_string(out: *mut c_void, str: VALUE, flags: u8) -> *mut c_void;
+    pub fn rb_jit_vstr_length(slice: *const c_void) -> c_long;
+    pub fn rb_jit_vstr_measure0(slice: *const c_void, op: c_long) -> c_long;
+    pub fn rb_jit_vstr_measure1(slice: *const c_void, arg: VALUE, op: c_long) -> c_long;
+    pub fn rb_jit_vstr_subseq(out: *mut c_void, slice: *const c_void, off: c_long, len: c_long) -> *mut c_void;
+    pub fn rb_jit_vstr_materialize(slice: *const c_void) -> VALUE;
+    pub fn rb_jit_vstr_start_with(slice: *const c_void, prefix: VALUE) -> VALUE;
+    pub fn rb_jit_vstr_end_with(slice: *const c_void, suffix: VALUE) -> VALUE;
+    pub fn rb_jit_vstr_eql(slice: *const c_void, other: VALUE) -> VALUE;
+    pub fn rb_jit_vstr_equal(slice: *const c_void, other: VALUE) -> VALUE;
+    pub fn rb_jit_vstr_byteindex(slice: *const c_void, needle: VALUE, initpos: c_long) -> VALUE;
 }
 
 // Renames
@@ -1532,6 +1547,9 @@ pub(crate) mod ids {
         name: respond_to_missing content: b"respond_to_missing?"
         name: eq                 content: b"=="
         name: string_eq          content: b"String#=="
+        name: itself
+        name: bytesize
+        name: byteindex
         name: include_p          content: b"include?"
         name: to_ary
         name: to_s

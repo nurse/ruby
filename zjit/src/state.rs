@@ -389,6 +389,10 @@ fn zjit_enable() {
     // Catch panics to avoid UB for unwinding into C frames.
     // See https://doc.rust-lang.org/nomicon/exception-safety.html
     let result = std::panic::catch_unwind(|| {
+        if let InitializationState::Initialized(method_annotations) = unsafe { &mut ZJIT_STATE } {
+            cruby_methods::init_zjit_iseq_methods(method_annotations);
+        }
+
         // Initialize ZJIT states
         let zjit_entry = ZJITState::init();
 

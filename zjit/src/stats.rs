@@ -604,6 +604,7 @@ pub fn side_exit_counter(reason: crate::hir::SideExitReason) -> Counter {
         ExpandArray                   => exit_expandarray_failure,
         GuardNotFrozen                => exit_guard_not_frozen_failure,
         GuardNotShared                => exit_guard_not_shared_failure,
+        GuardBitEquals                => exit_guard_bit_equals_failure,
         GuardLess                     => exit_guard_less_failure,
         GuardGreaterEq                => exit_guard_greater_eq_failure,
         GuardSuperMethodEntry         => exit_guard_super_method_entry,

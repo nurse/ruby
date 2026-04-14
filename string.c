@@ -11556,6 +11556,214 @@ rb_str_delete_suffix(VALUE str, VALUE suffix)
     return rb_str_subseq(str, 0, RSTRING_LEN(str) - suffixlen);
 }
 
+static inline const char *
+rb_jit_vstr_ptr(const rb_jit_vstr_t *slice)
+{
+    return RSTRING_PTR(slice->base) + slice->off;
+}
+
+static inline rb_encoding *
+rb_jit_vstr_enc(const rb_jit_vstr_t *slice)
+{
+    return rb_enc_from_index(slice->enc_idx);
+}
+
+static inline void
+rb_jit_vstr_assign(rb_jit_vstr_t *out, const rb_jit_vstr_t *slice, long off_delta, long len, uint8_t flags)
+{
+    out->base = slice->base;
+    out->off = slice->off + off_delta;
+    out->len = len;
+    out->enc_idx = slice->enc_idx;
+    out->flags = flags;
+}
+
+static inline VALUE
+rb_jit_vstr_fake_string(const rb_jit_vstr_t *slice, struct RString *fake_str)
+{
+    return rb_setup_fake_str(fake_str, rb_jit_vstr_ptr(slice), slice->len, rb_jit_vstr_enc(slice));
+}
+
+bool
+rb_jit_vstr_enabled_p(VALUE ignored)
+{
+    (void)ignored;
+    const rb_event_flag_t tracing_events = RUBY_INTERNAL_EVENT_NEWOBJ | RUBY_INTERNAL_EVENT_FREEOBJ;
+    return !rb_gc_event_hook_required_p(tracing_events) && !rb_gc_auto_compact_p();
+}
+
+bool
+rb_jit_vstr_supported_string_p(VALUE str)
+{
+    if (!RB_TYPE_P(str, T_STRING)) return false;
+    if (!rb_str_enc_fastpath(str)) return false;
+    if (rb_enc_dummy_p(STR_ENC_GET(str))) return false;
+    if (rb_enc_str_coderange(str) == ENC_CODERANGE_BROKEN) return false;
+    return true;
+}
+
+bool
+rb_jit_vstr_compatible_string_p(const rb_jit_vstr_t *slice, VALUE other)
+{
+    if (!rb_jit_vstr_supported_string_p(other)) return false;
+    return rb_str_comparable(slice->base, other);
+}
+
+bool
+rb_jit_vstr_byteindex_supported_offset_p(const rb_jit_vstr_t *slice, long initpos)
+{
+    long pos = initpos;
+    const long len = slice->len;
+
+    if (pos < 0 ? (pos += len) < 0 : pos > len) {
+        return true;
+    }
+    if (slice->enc_idx != ENCINDEX_UTF_8) {
+        return true;
+    }
+
+    const char *start = rb_jit_vstr_ptr(slice);
+    const char *end = start + len;
+    return at_char_boundary(start, start + pos, end, rb_jit_vstr_enc(slice));
+}
+
+rb_jit_vstr_t *
+rb_jit_vstr_from_string(rb_jit_vstr_t *out, VALUE str, uint8_t flags)
+{
+    out->base = str;
+    out->off = 0;
+    out->len = RSTRING_LEN(str);
+    out->enc_idx = ENCODING_GET(str);
+    out->flags = flags;
+    return out;
+}
+
+long
+rb_jit_vstr_length(const rb_jit_vstr_t *slice)
+{
+    return slice->len;
+}
+
+static inline VALUE
+rb_jit_vstr_fake_value(const rb_jit_vstr_t *slice, struct RString *fake_str)
+{
+    return rb_jit_vstr_fake_string(slice, fake_str);
+}
+
+static inline void
+rb_jit_vstr_bounds(const rb_jit_vstr_t *slice, const char **start, const char **end)
+{
+    *start = rb_jit_vstr_ptr(slice);
+    *end = *start + slice->len;
+}
+
+long
+rb_jit_vstr_measure0(const rb_jit_vstr_t *slice, long op)
+{
+    struct RString fake_str = {RBASIC_INIT};
+    const char *start;
+    const char *end;
+
+    switch (op) {
+      case RB_JIT_VSTR_MEASURE_TRIM_LEFT_BEG:
+        rb_jit_vstr_bounds(slice, &start, &end);
+        return lstrip_offset(slice->base, start, end, rb_jit_vstr_enc(slice));
+      case RB_JIT_VSTR_MEASURE_TRIM_RIGHT_END:
+        rb_jit_vstr_bounds(slice, &start, &end);
+        return slice->len - rstrip_offset(slice->base, start, end, rb_jit_vstr_enc(slice));
+      case RB_JIT_VSTR_MEASURE_CHOMP_DROP:
+        return slice->len - chompped_length(rb_jit_vstr_fake_value(slice, &fake_str), rb_rs);
+      case RB_JIT_VSTR_MEASURE_CHOP_DROP:
+        return slice->len - chopped_length(rb_jit_vstr_fake_value(slice, &fake_str));
+    }
+
+    rb_bug("unknown rb_jit_vstr_measure0 op: %ld", op);
+    return 0;
+}
+
+long
+rb_jit_vstr_measure1(const rb_jit_vstr_t *slice, VALUE arg, long op)
+{
+    struct RString fake_str = {RBASIC_INIT};
+
+    switch (op) {
+      case RB_JIT_VSTR_MEASURE_DELETE_PREFIX_DROP:
+        return deleted_prefix_length(rb_jit_vstr_fake_value(slice, &fake_str), arg);
+      case RB_JIT_VSTR_MEASURE_DELETE_SUFFIX_DROP:
+        return deleted_suffix_length(rb_jit_vstr_fake_value(slice, &fake_str), arg);
+    }
+
+    rb_bug("unknown rb_jit_vstr_measure1 op: %ld", op);
+    return 0;
+}
+
+rb_jit_vstr_t *
+rb_jit_vstr_subseq(rb_jit_vstr_t *out, const rb_jit_vstr_t *slice, long off, long len)
+{
+    uint8_t flags = slice->flags | VSTR_FRESH_ON_MAT;
+
+    rb_jit_vstr_assign(out, slice, off, len, flags);
+    return out;
+}
+
+VALUE
+rb_jit_vstr_materialize(const rb_jit_vstr_t *slice)
+{
+    if (slice->off == 0 && slice->len == RSTRING_LEN(slice->base) &&
+        (slice->flags & VSTR_FRESH_ON_MAT)) {
+        return rb_str_dup(slice->base);
+    }
+    return rb_str_subseq(slice->base, slice->off, slice->len);
+}
+
+VALUE
+rb_jit_vstr_start_with(const rb_jit_vstr_t *slice, VALUE prefix)
+{
+    struct RString fake_str = {RBASIC_INIT};
+    VALUE str = rb_jit_vstr_fake_string(slice, &fake_str);
+
+    if (RSTRING_LEN(prefix) == 0) return Qtrue;
+    return RBOOL(deleted_prefix_length(str, prefix) > 0);
+}
+
+VALUE
+rb_jit_vstr_end_with(const rb_jit_vstr_t *slice, VALUE suffix)
+{
+    struct RString fake_str = {RBASIC_INIT};
+    VALUE str = rb_jit_vstr_fake_string(slice, &fake_str);
+
+    if (RSTRING_LEN(suffix) == 0) return Qtrue;
+    return RBOOL(deleted_suffix_length(str, suffix) > 0);
+}
+
+VALUE
+rb_jit_vstr_eql(const rb_jit_vstr_t *slice, VALUE other)
+{
+    struct RString fake_str = {RBASIC_INIT};
+    return rb_str_eql_internal(rb_jit_vstr_fake_string(slice, &fake_str), other);
+}
+
+VALUE
+rb_jit_vstr_equal(const rb_jit_vstr_t *slice, VALUE other)
+{
+    return rb_jit_vstr_eql(slice, other);
+}
+
+VALUE
+rb_jit_vstr_byteindex(const rb_jit_vstr_t *slice, VALUE needle, long initpos)
+{
+    struct RString fake_str = {RBASIC_INIT};
+    VALUE str = rb_jit_vstr_fake_string(slice, &fake_str);
+    long pos = initpos;
+
+    if (pos < 0 ? (pos += slice->len) < 0 : pos > slice->len) {
+        return Qnil;
+    }
+
+    pos = rb_str_byteindex(str, needle, pos);
+    return pos >= 0 ? LONG2NUM(pos) : Qnil;
+}
+
 void
 rb_str_setter(VALUE val, ID id, VALUE *var)
 {
@@ -13035,3 +13243,4 @@ Init_String(void)
     rb_define_method(rb_cSymbol, "encoding", sym_encoding, 0);
 }
 
+#include "string.rbinc"
