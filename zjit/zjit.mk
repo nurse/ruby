@@ -11,25 +11,28 @@ ZJIT_SRC_FILES = $(wildcard \
 	$(top_srcdir)/zjit/src/*/*/*/*.rs \
 	$(top_srcdir)/jit/src/lib.rs \
 	)
+ZJIT_GENERATED_CFG = --cfg ruby_build_dir_generated
 
 $(RUST_LIB): $(ZJIT_SRC_FILES)
+$(RUST_LIB): string_zjit.inc.rs
 
 # Absolute path to match RUST_LIB rules to avoid picking
 # the "target" dir in the source directory through VPATH.
 BUILD_ZJIT_LIBS = $(TOP_BUILD_DIR)/$(ZJIT_LIBS)
+ZJIT_RUSTC_ENV := RUBY_BUILD_DIR='$(TOP_BUILD_DIR)'
 
 # In a ZJIT-only build (no YJIT)
 ifneq ($(strip $(ZJIT_LIBS)),)
-$(BUILD_ZJIT_LIBS): $(ZJIT_SRC_FILES) target/.rustc-version
+$(BUILD_ZJIT_LIBS): $(ZJIT_SRC_FILES) string_zjit.inc.rs target/.rustc-version
 	$(ECHO) 'building Rust ZJIT (release mode)'
-	$(gnumake_recursive)$(Q) $(RUSTC) $(ZJIT_RUSTC_ARGS)
+	$(gnumake_recursive)$(Q) $(ZJIT_RUSTC_ENV) $(RUSTC) $(ZJIT_GENERATED_CFG) $(ZJIT_RUSTC_ARGS)
 else ifneq ($(strip $(RLIB_DIR)),) # combo build
 # Absolute path to avoid VPATH ambiguity
 ZJIT_RLIB = $(TOP_BUILD_DIR)/$(RLIB_DIR)/libzjit.rlib
 
-$(ZJIT_RLIB): $(ZJIT_SRC_FILES) target/.rustc-version
+$(ZJIT_RLIB): $(ZJIT_SRC_FILES) string_zjit.inc.rs target/.rustc-version
 	$(ECHO) 'building $(@F)'
-	$(gnumake_recursive)$(Q) $(RUSTC) '-L$(@D)' --extern=jit $(ZJIT_RUSTC_ARGS)
+	$(gnumake_recursive)$(Q) $(ZJIT_RUSTC_ENV) $(RUSTC) $(ZJIT_GENERATED_CFG) '-L$(@D)' --extern=jit $(ZJIT_RUSTC_ARGS)
 
 $(RUST_LIB): $(ZJIT_RLIB)
 endif # ifneq ($(strip $(ZJIT_LIBS)),)

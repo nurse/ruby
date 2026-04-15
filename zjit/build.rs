@@ -1,10 +1,15 @@
-// This build script is only used for `make zjit-test` for building
-// the test binary; ruby builds don't use this.
+// Ruby builds normally invoke `rustc` directly, but Cargo-based developer
+// workflows still run this build script. Use it only to configure Cargo
+// builds; make-based builds wire the same state through zjit.mk.
 fn main() {
     use std::env;
 
+    println!("cargo:rustc-check-cfg=cfg(ruby_build_dir_generated)");
+
     // option_env! automatically registers a rerun-if-env-changed
     if let Some(ruby_build_dir) = option_env!("RUBY_BUILD_DIR") {
+        println!("cargo:rustc-cfg=ruby_build_dir_generated");
+
         // Link against libminiruby.a
         println!("cargo:rustc-link-search=native={ruby_build_dir}");
         println!("cargo:rustc-link-lib=static:-bundle=miniruby");

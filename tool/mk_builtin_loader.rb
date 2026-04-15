@@ -3,11 +3,12 @@
 require 'json'
 require 'open3'
 require 'stringio'
+require_relative 'lib/builtin_ast'
 require_relative 'ruby_vm/helpers/c_escape'
 
 SUBLIBS = {}
 REQUIRED = {}
-BUILTIN_ATTRS = %w[leaf inline_block use_block c_trace without_interrupts]
+BUILTIN_ATTRS = BuiltinAST::BUILTIN_ATTRS
 
 module CompileWarning
   @@warnings = 0
@@ -39,19 +40,12 @@ LOCALS_DB = {} # [method_name, first_line] = locals
 
 # Extract the contents of the given string node.
 def extract_string_literal(node)
-  case node["type"]
-  when "StringNode"
-    node["unescaped"]
-  when "InterpolatedStringNode"
-    node["parts"].map { |part| extract_string_literal(part) }.join
-  else
-    raise "unexpected #{node["type"]}"
-  end
+  BuiltinAST.extract_string_literal(node)
 end
 
 # Retrieve the line number of the given node in the source.
 def line_number(source, node)
-  source.b.byteslice(0, node["location"]["start"]).count("\n") + 1
+  BuiltinAST.line_number(source, node)
 end
 
 def visit_call_node(source, node, name, locals, requires, bs, inlines)
@@ -63,26 +57,19 @@ def visit_call_node(source, node, name, locals, requires, bs, inlines)
     return true
   end
 
-  primitive_name = nil
-
-  receiver = node["receiver"]
-
-  if (!receiver.nil? && receiver["type"] == "ConstantReadNode" && receiver["name"] == "Primitive") ||
-     (!receiver.nil? && receiver["type"] == "CallNode" && receiver["flags"].include?("VARIABLE_CALL") && receiver["name"] == "__builtin")
-    primitive_name = node["name"]
-  elsif node["name"].start_with?("__builtin_")
-    primitive_name = node["name"][10..-1]
-  else
+  primitive = BuiltinAST.primitive_call(node)
+  if primitive.nil?
     # If we get here, then this isn't a primitive function call and we can
     # continue the visit.
     return true
   end
+  primitive_name = primitive.name
 
   # The name of the C function that we will be calling for this call node. It
   # may change later in this method depending on the type of primitive.
   cfunction_name = primitive_name
 
-  args = node["arguments"].nil? ? [] : node["arguments"]["arguments"]
+  args = primitive.args
   argc = args.size
 
   if primitive_name.match?(/[\!\?]$/)
@@ -146,17 +133,7 @@ def visit_call_node(source, node, name, locals, requires, bs, inlines)
 end
 
 def each_node(root, &blk)
-  return unless yield root
-
-  root.each do |key, value|
-    next if key == "type" || key == "location"
-
-    if value.is_a?(Hash)
-      each_node(value, &blk) if value.key?("type")
-    elsif value.is_a?(Array) && value[0].is_a?(Hash)
-      value.each { |node| each_node(node, &blk) }
-    end
-  end
+  BuiltinAST.each_node(root, &blk)
 end
 
 def visit_node(source, root, name, locals, requires, bs, inlines)

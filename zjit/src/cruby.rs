@@ -172,10 +172,16 @@ unsafe extern "C" {
     pub fn rb_jit_vstr_byteindex_supported_offset_p(slice: *const c_void, initpos: c_long) -> bool;
     pub fn rb_jit_vstr_from_string(out: *mut c_void, str: VALUE, flags: u8) -> *mut c_void;
     pub fn rb_jit_vstr_length(slice: *const c_void) -> c_long;
-    pub fn rb_jit_vstr_measure0(slice: *const c_void, op: c_long) -> c_long;
-    pub fn rb_jit_vstr_measure1(slice: *const c_void, arg: VALUE, op: c_long) -> c_long;
     pub fn rb_jit_vstr_subseq(out: *mut c_void, slice: *const c_void, off: c_long, len: c_long) -> *mut c_void;
     pub fn rb_jit_vstr_materialize(slice: *const c_void) -> VALUE;
+    pub fn rb_jit_vstr_delete_prefix_len(slice: *const c_void, prefix: VALUE) -> c_long;
+    pub fn rb_jit_vstr_delete_suffix_len(slice: *const c_void, suffix: VALUE) -> c_long;
+    pub fn rb_jit_vstr_lstrip_beg(slice: *const c_void) -> c_long;
+    pub fn rb_jit_vstr_rstrip_end(slice: *const c_void) -> c_long;
+    pub fn rb_jit_vstr_strip_beg(slice: *const c_void) -> c_long;
+    pub fn rb_jit_vstr_strip_end_from(slice: *const c_void, beg: c_long) -> c_long;
+    pub fn rb_jit_vstr_chomp_drop(slice: *const c_void) -> c_long;
+    pub fn rb_jit_vstr_chop_drop(slice: *const c_void) -> c_long;
     pub fn rb_jit_vstr_start_with(slice: *const c_void, prefix: VALUE) -> VALUE;
     pub fn rb_jit_vstr_end_with(slice: *const c_void, suffix: VALUE) -> VALUE;
     pub fn rb_jit_vstr_eql(slice: *const c_void, other: VALUE) -> VALUE;

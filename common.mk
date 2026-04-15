@@ -717,7 +717,7 @@ clean-rubyspec: clean-spec
 
 distclean: distclean-ext distclean-enc distclean-golf distclean-docs distclean-extout distclean-modular-gc distclean-local distclean-platform distclean-spec
 distclean-local:: clean-local
-	$(Q)$(RM) $(MKFILES) *.inc $(PRELUDES) *.rbinc *.rbbin
+	$(Q)$(RM) $(MKFILES) *.inc *.inc.c *.inc.rs $(PRELUDES) *.rbinc *.rbbin
 	$(Q)$(RM) config.cache config.status config.status.lineno
 	$(Q)$(RM) *~ *.bak *.stackdump core *.core gmon.out $(PREP)
 	-$(Q)$(RMALL) $(srcdir)/autom4te.cache
@@ -1207,8 +1207,9 @@ BUILTIN_RB_SRCS = \
 		$(srcdir)/zjit.rb \
 		$(empty)
 BUILTIN_RB_INCS = $(BUILTIN_RB_SRCS:.rb=.rbinc)
+STRING_ZJIT_INCLUDES = string_zjit.inc.rs string_zjit.inc.c
 
-string.$(OBJEXT): string.rbinc
+string.$(OBJEXT): string.rbinc string_zjit.inc.c
 
 common-srcs: $(srcs_vpath)parse.c $(srcs_vpath)lex.c $(srcs_vpath)enc/trans/newline.c $(srcs_vpath)id.c \
 	     $(BUILTIN_RB_INCS) \
@@ -1333,7 +1334,11 @@ $(BUILTIN_BINARY:yes=built)in_binary.rbbin: $(PREP) $(BUILTIN_RB_SRCS) $(srcdir)
 $(BUILTIN_BINARY:no=builtin)_binary.rbbin:
 	$(Q) echo> $@ // empty $(@F)
 
-$(BUILTIN_RB_INCS): $(tooldir)/mk_builtin_loader.rb $(DUMP_AST_TARGET)
+$(BUILTIN_RB_INCS): $(tooldir)/mk_builtin_loader.rb $(tooldir)/lib/builtin_ast.rb $(DUMP_AST_TARGET)
+
+$(STRING_ZJIT_INCLUDES): $(srcdir)/string.rb $(tooldir)/gen_string_zjit.rb $(tooldir)/lib/builtin_ast.rb $(DUMP_AST_TARGET)
+	$(ECHO) generating $@
+	$(Q) $(BASERUBY) $(tooldir)/gen_string_zjit.rb $(DUMP_AST) $(srcdir)/string.rb string_zjit.inc.rs string_zjit.inc.c
 
 dump_ast$(BUILD_EXEEXT): $(tooldir)/dump_ast.c $(LIBPRISM_OBJS)
 	$(ECHO) compiling $@

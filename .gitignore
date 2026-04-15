@@ -12,6 +12,8 @@
 *.i
 *.ii
 *.inc
+*.inc.c
+*.inc.rs
 *.log
 *.o
 *.o.tmp

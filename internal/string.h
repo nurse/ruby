@@ -36,15 +36,7 @@ typedef struct rb_jit_vstr_struct {
 
 enum rb_jit_vstr_flags {
     VSTR_FRESH_ON_MAT = 1 << 0,
-};
-
-enum rb_jit_vstr_measure_op {
-    RB_JIT_VSTR_MEASURE_DELETE_PREFIX_DROP = 0,
-    RB_JIT_VSTR_MEASURE_DELETE_SUFFIX_DROP,
-    RB_JIT_VSTR_MEASURE_TRIM_LEFT_BEG,
-    RB_JIT_VSTR_MEASURE_TRIM_RIGHT_END,
-    RB_JIT_VSTR_MEASURE_CHOMP_DROP,
-    RB_JIT_VSTR_MEASURE_CHOP_DROP,
+    VSTR_FRESH_ON_MATERIALIZE = VSTR_FRESH_ON_MAT,
 };
 
 #ifdef rb_fstring_cstr
@@ -145,15 +137,8 @@ bool rb_jit_vstr_compatible_string_p(const rb_jit_vstr_t *slice, VALUE other);
 bool rb_jit_vstr_byteindex_supported_offset_p(const rb_jit_vstr_t *slice, long initpos);
 rb_jit_vstr_t *rb_jit_vstr_from_string(rb_jit_vstr_t *out, VALUE str, uint8_t flags);
 long rb_jit_vstr_length(const rb_jit_vstr_t *slice);
-long rb_jit_vstr_measure0(const rb_jit_vstr_t *slice, long op);
-long rb_jit_vstr_measure1(const rb_jit_vstr_t *slice, VALUE arg, long op);
 rb_jit_vstr_t *rb_jit_vstr_subseq(rb_jit_vstr_t *out, const rb_jit_vstr_t *slice, long off, long len);
 VALUE rb_jit_vstr_materialize(const rb_jit_vstr_t *slice);
-VALUE rb_jit_vstr_start_with(const rb_jit_vstr_t *slice, VALUE prefix);
-VALUE rb_jit_vstr_end_with(const rb_jit_vstr_t *slice, VALUE suffix);
-VALUE rb_jit_vstr_eql(const rb_jit_vstr_t *slice, VALUE other);
-VALUE rb_jit_vstr_equal(const rb_jit_vstr_t *slice, VALUE other);
-VALUE rb_jit_vstr_byteindex(const rb_jit_vstr_t *slice, VALUE needle, long initpos);
 
 VALUE rb_fstring_new(const char *ptr, long len);
 void rb_gc_free_fstring(VALUE obj);

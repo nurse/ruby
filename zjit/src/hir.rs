@@ -1771,24 +1771,12 @@ fn known_ccall_name(cfunc: *const u8) -> Option<&'static str> {
         Some("rb_jit_vstr_from_string")
     } else if cfunc == rb_jit_vstr_length as *const u8 {
         Some("rb_jit_vstr_length")
-    } else if cfunc == rb_jit_vstr_measure0 as *const u8 {
-        Some("rb_jit_vstr_measure0")
-    } else if cfunc == rb_jit_vstr_measure1 as *const u8 {
-        Some("rb_jit_vstr_measure1")
     } else if cfunc == rb_jit_vstr_subseq as *const u8 {
         Some("rb_jit_vstr_subseq")
     } else if cfunc == rb_jit_vstr_materialize as *const u8 {
         Some("rb_jit_vstr_materialize")
-    } else if cfunc == rb_jit_vstr_start_with as *const u8 {
-        Some("rb_jit_vstr_start_with")
-    } else if cfunc == rb_jit_vstr_end_with as *const u8 {
-        Some("rb_jit_vstr_end_with")
-    } else if cfunc == rb_jit_vstr_eql as *const u8 {
-        Some("rb_jit_vstr_eql")
-    } else if cfunc == rb_jit_vstr_equal as *const u8 {
-        Some("rb_jit_vstr_equal")
-    } else if cfunc == rb_jit_vstr_byteindex as *const u8 {
-        Some("rb_jit_vstr_byteindex")
+    } else if let Some(name) = crate::cruby_methods::string_zjit_cfunc_name(cfunc) {
+        Some(name)
     } else {
         None
     }
@@ -6923,13 +6911,13 @@ fn maybe_vstr_candidate_value(fun: &Function, val: InsnId) -> bool {
             Insn::SendDirect { recv, iseq, cd, ref args, state, .. } => {
                 let annotations = ZJITState::get_method_annotations();
                 let _ = recv;
-                annotations.get_iseq_vstr_producer(iseq).is_some_and(|desc| desc.matches_callsite(fun, args, state))
-                    || annotations.get_vstr_method_descriptor(ruby_call_method_id(cd)).is_some_and(|desc| desc.matches_callsite(fun, args, state))
+                annotations.get_iseq_properties(iseq).is_some_and(|props| props.returns_vstr && (props.call_guard)(fun, args, state))
+                    || annotations.get_iseq_method_properties(ruby_call_method_id(cd)).is_some_and(|props| props.returns_vstr && (props.call_guard)(fun, args, state))
             }
             Insn::Send { recv, cd, ref args, state, .. } => {
                 let annotations = ZJITState::get_method_annotations();
                 let _ = recv;
-                annotations.get_vstr_method_descriptor(ruby_call_method_id(cd)).is_some_and(|desc| desc.matches_callsite(fun, args, state))
+                annotations.get_iseq_method_properties(ruby_call_method_id(cd)).is_some_and(|props| props.returns_vstr && (props.call_guard)(fun, args, state))
             }
             Insn::GuardType { val, .. }
             | Insn::GuardTypeNot { val, .. }

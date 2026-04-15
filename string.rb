@@ -4,10 +4,10 @@ class String
       undef :delete_prefix
 
       def delete_prefix(prefix)
-        drop = Primitive.cexpr! 'LONG2NUM(deleted_prefix_length(self, prefix))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if drop == 0
+        drop = Primitive.rb_str_delete_prefix_len(prefix)
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless drop
 
-        Primitive.cexpr! 'rb_str_subseq(self, NUM2LONG(drop), RSTRING_LEN(self) - NUM2LONG(drop))'
+        Primitive.rb_str_vstr_subseq(drop, Primitive.rb_str_vstr_bytesize - drop, 0)
       end
     end
 
@@ -15,10 +15,10 @@ class String
       undef :delete_suffix
 
       def delete_suffix(suffix)
-        drop = Primitive.cexpr! 'LONG2NUM(deleted_suffix_length(self, suffix))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if drop == 0
+        drop = Primitive.rb_str_delete_suffix_len(suffix)
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless drop
 
-        Primitive.cexpr! 'rb_str_subseq(self, 0, RSTRING_LEN(self) - NUM2LONG(drop))'
+        Primitive.rb_str_vstr_subseq(0, Primitive.rb_str_vstr_bytesize - drop, 0)
       end
     end
 
@@ -26,14 +26,12 @@ class String
       undef :lstrip
 
       def lstrip(*selectors)
-        unless selectors.empty?
-          return Primitive.cexpr! 'rb_str_lstrip((int)RARRAY_LEN(selectors), (VALUE *)RARRAY_CONST_PTR(selectors), self)'
-        end
+        return Primitive.rb_str_lstrip_fallback(selectors) unless selectors.empty?
 
-        beg = Primitive.cexpr! 'LONG2NUM(lstrip_offset(self, RSTRING_PTR(self), RSTRING_END(self), STR_ENC_GET(self)))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if beg == 0
+        beg = Primitive.rb_str_lstrip_beg
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless beg
 
-        Primitive.cexpr! 'rb_str_subseq(self, NUM2LONG(beg), RSTRING_LEN(self) - NUM2LONG(beg))'
+        Primitive.rb_str_vstr_subseq(beg, Primitive.rb_str_vstr_bytesize - beg, 0)
       end
     end
 
@@ -41,15 +39,12 @@ class String
       undef :rstrip
 
       def rstrip(*selectors)
-        unless selectors.empty?
-          return Primitive.cexpr! 'rb_str_rstrip((int)RARRAY_LEN(selectors), (VALUE *)RARRAY_CONST_PTR(selectors), self)'
-        end
+        return Primitive.rb_str_rstrip_fallback(selectors) unless selectors.empty?
 
-        len = Primitive.cexpr! 'LONG2NUM(RSTRING_LEN(self))'
-        fin = Primitive.cexpr! 'LONG2NUM(RSTRING_LEN(self) - rstrip_offset(self, RSTRING_PTR(self), RSTRING_END(self), STR_ENC_GET(self)))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if fin == len
+        fin = Primitive.rb_str_rstrip_end
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless fin
 
-        Primitive.cexpr! 'rb_str_subseq(self, 0, NUM2LONG(fin))'
+        Primitive.rb_str_vstr_subseq(0, fin, 0)
       end
     end
 
@@ -57,16 +52,13 @@ class String
       undef :strip
 
       def strip(*selectors)
-        unless selectors.empty?
-          return Primitive.cexpr! 'rb_str_strip((int)RARRAY_LEN(selectors), (VALUE *)RARRAY_CONST_PTR(selectors), self)'
-        end
+        return Primitive.rb_str_strip_fallback(selectors) unless selectors.empty?
 
-        len = Primitive.cexpr! 'LONG2NUM(RSTRING_LEN(self))'
-        beg = Primitive.cexpr! 'LONG2NUM(lstrip_offset(self, RSTRING_PTR(self), RSTRING_END(self), STR_ENC_GET(self)))'
-        fin = Primitive.cexpr! 'LONG2NUM(RSTRING_LEN(self) - rstrip_offset(self, RSTRING_PTR(self), RSTRING_END(self), STR_ENC_GET(self)))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if beg == 0 && fin == len
+        beg = Primitive.rb_str_strip_beg
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless beg
 
-        Primitive.cexpr! 'rb_str_subseq(self, NUM2LONG(beg), NUM2LONG(fin) - NUM2LONG(beg))'
+        fin = Primitive.rb_str_strip_end_from(beg)
+        Primitive.rb_str_vstr_subseq(beg, fin - beg, 0)
       end
     end
 
@@ -74,12 +66,12 @@ class String
       undef :chomp
 
       def chomp(separator = (missing = true))
-        return Primitive.cexpr! 'rb_str_chomp(1, (VALUE *)&separator, self)' unless missing
+        return Primitive.rb_str_chomp_fallback(separator) unless missing
 
-        drop = Primitive.cexpr! 'LONG2NUM(RSTRING_LEN(self) - chompped_length(self, rb_rs))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if drop == 0
+        drop = Primitive.rb_str_chomp_drop
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless drop
 
-        Primitive.cexpr! 'rb_str_subseq(self, 0, RSTRING_LEN(self) - NUM2LONG(drop))'
+        Primitive.rb_str_vstr_subseq(0, Primitive.rb_str_vstr_bytesize - drop, 0)
       end
     end
 
@@ -87,10 +79,72 @@ class String
       undef :chop
 
       def chop
-        drop = Primitive.cexpr! 'LONG2NUM(RSTRING_LEN(self) - chopped_length(self))'
-        return Primitive.cexpr! 'str_duplicate(rb_cString, self)' if drop == 0
+        drop = Primitive.rb_str_chop_drop
+        return Primitive.rb_str_vstr_full(Primitive.cconst!('INT2FIX(VSTR_FRESH_ON_MATERIALIZE)')) unless drop
 
-        Primitive.cexpr! 'rb_str_subseq(self, 0, RSTRING_LEN(self) - NUM2LONG(drop))'
+        Primitive.rb_str_vstr_subseq(0, Primitive.rb_str_vstr_bytesize - drop, 0)
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:bytesize)
+      undef :bytesize
+
+      def bytesize
+        Primitive.rb_str_vstr_bytesize
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:empty?)
+      undef :empty?
+
+      def empty?
+        Primitive.rb_str_vstr_bytesize == 0
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:start_with?)
+      undef :start_with?
+
+      def start_with?(*args)
+        return Primitive.rb_str_start_with_fallback(args) unless args.length == 1
+
+        arg = args[0]
+        Primitive.rb_str_vstr_start_with(arg)
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:end_with?)
+      undef :end_with?
+
+      def end_with?(*args)
+        return Primitive.rb_str_end_with_fallback(args) unless args.length == 1
+
+        arg = args[0]
+        Primitive.rb_str_vstr_end_with(arg)
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:eql?)
+      undef :eql?
+
+      def eql?(other)
+        Primitive.rb_str_vstr_eql(other)
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:==)
+      undef :==
+
+      def ==(other)
+        Primitive.rb_str_vstr_equal(other)
+      end
+    end
+
+    if Primitive.rb_builtin_basic_definition_p(:byteindex)
+      undef :byteindex
+
+      def byteindex(needle, offset = (missing = true))
+        Primitive.rb_str_vstr_byteindex(needle, offset, missing)
       end
     end
   end

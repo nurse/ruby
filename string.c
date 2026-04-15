@@ -11556,6 +11556,194 @@ rb_str_delete_suffix(VALUE str, VALUE suffix)
     return rb_str_subseq(str, 0, RSTRING_LEN(str) - suffixlen);
 }
 
+VALUE
+rb_str_vstr_full(rb_execution_context_t *ec, VALUE self, VALUE flags)
+{
+    (void)ec;
+
+    if (NUM2INT(flags) & VSTR_FRESH_ON_MATERIALIZE) {
+        return str_duplicate(rb_cString, self);
+    }
+    return rb_str_subseq(self, 0, RSTRING_LEN(self));
+}
+
+VALUE
+rb_str_vstr_subseq(rb_execution_context_t *ec, VALUE self, VALUE off, VALUE len, VALUE flags)
+{
+    (void)ec;
+    (void)flags;
+    return rb_str_subseq(self, NUM2LONG(off), NUM2LONG(len));
+}
+
+VALUE
+rb_str_vstr_bytesize(rb_execution_context_t *ec, VALUE self)
+{
+    (void)ec;
+    return rb_str_bytesize(self);
+}
+
+VALUE
+rb_str_delete_prefix_len(rb_execution_context_t *ec, VALUE self, VALUE prefix)
+{
+    (void)ec;
+
+    long drop = deleted_prefix_length(self, prefix);
+    return drop > 0 ? LONG2NUM(drop) : Qnil;
+}
+
+VALUE
+rb_str_delete_suffix_len(rb_execution_context_t *ec, VALUE self, VALUE suffix)
+{
+    (void)ec;
+
+    long drop = deleted_suffix_length(self, suffix);
+    return drop > 0 ? LONG2NUM(drop) : Qnil;
+}
+
+VALUE
+rb_str_lstrip_beg(rb_execution_context_t *ec, VALUE self)
+{
+    (void)ec;
+
+    long beg = lstrip_offset(self, RSTRING_PTR(self), RSTRING_END(self), STR_ENC_GET(self));
+    return beg > 0 ? LONG2NUM(beg) : Qnil;
+}
+
+VALUE
+rb_str_rstrip_end(rb_execution_context_t *ec, VALUE self)
+{
+    (void)ec;
+
+    long len = RSTRING_LEN(self);
+    long fin = len - rstrip_offset(self, RSTRING_PTR(self), RSTRING_END(self), STR_ENC_GET(self));
+    return fin < len ? LONG2NUM(fin) : Qnil;
+}
+
+VALUE
+rb_str_strip_beg(rb_execution_context_t *ec, VALUE self)
+{
+    (void)ec;
+
+    const char *start = RSTRING_PTR(self);
+    const char *end = RSTRING_END(self);
+    rb_encoding *enc = STR_ENC_GET(self);
+    long beg = lstrip_offset(self, start, end, enc);
+    long fin = RSTRING_LEN(self) - rstrip_offset(self, start + beg, end, enc);
+    return (beg == 0 && fin == RSTRING_LEN(self)) ? Qnil : LONG2NUM(beg);
+}
+
+VALUE
+rb_str_strip_end_from(rb_execution_context_t *ec, VALUE self, VALUE beg)
+{
+    (void)ec;
+
+    long offset = NUM2LONG(beg);
+    const char *start = RSTRING_PTR(self) + offset;
+    const char *end = RSTRING_END(self);
+    long fin = RSTRING_LEN(self) - rstrip_offset(self, start, end, STR_ENC_GET(self));
+    return LONG2NUM(fin);
+}
+
+VALUE
+rb_str_chomp_drop(rb_execution_context_t *ec, VALUE self)
+{
+    (void)ec;
+
+    long drop = RSTRING_LEN(self) - chompped_length(self, rb_rs);
+    return drop > 0 ? LONG2NUM(drop) : Qnil;
+}
+
+VALUE
+rb_str_chop_drop(rb_execution_context_t *ec, VALUE self)
+{
+    (void)ec;
+
+    long drop = RSTRING_LEN(self) - chopped_length(self);
+    return drop > 0 ? LONG2NUM(drop) : Qnil;
+}
+
+VALUE
+rb_str_lstrip_fallback(rb_execution_context_t *ec, VALUE self, VALUE selectors)
+{
+    (void)ec;
+    return rb_str_lstrip(RARRAY_LENINT(selectors), (VALUE *)RARRAY_CONST_PTR(selectors), self);
+}
+
+VALUE
+rb_str_rstrip_fallback(rb_execution_context_t *ec, VALUE self, VALUE selectors)
+{
+    (void)ec;
+    return rb_str_rstrip(RARRAY_LENINT(selectors), (VALUE *)RARRAY_CONST_PTR(selectors), self);
+}
+
+VALUE
+rb_str_strip_fallback(rb_execution_context_t *ec, VALUE self, VALUE selectors)
+{
+    (void)ec;
+    return rb_str_strip(RARRAY_LENINT(selectors), (VALUE *)RARRAY_CONST_PTR(selectors), self);
+}
+
+VALUE
+rb_str_chomp_fallback(rb_execution_context_t *ec, VALUE self, VALUE separator)
+{
+    (void)ec;
+    return rb_str_chomp(1, &separator, self);
+}
+
+VALUE
+rb_str_start_with_fallback(rb_execution_context_t *ec, VALUE self, VALUE args)
+{
+    (void)ec;
+    return rb_str_start_with(RARRAY_LENINT(args), (VALUE *)RARRAY_CONST_PTR(args), self);
+}
+
+VALUE
+rb_str_end_with_fallback(rb_execution_context_t *ec, VALUE self, VALUE args)
+{
+    (void)ec;
+    return rb_str_end_with(RARRAY_LENINT(args), (VALUE *)RARRAY_CONST_PTR(args), self);
+}
+
+VALUE
+rb_str_vstr_start_with(rb_execution_context_t *ec, VALUE self, VALUE arg)
+{
+    (void)ec;
+    return rb_str_start_with(1, &arg, self);
+}
+
+VALUE
+rb_str_vstr_end_with(rb_execution_context_t *ec, VALUE self, VALUE arg)
+{
+    (void)ec;
+    return rb_str_end_with(1, &arg, self);
+}
+
+VALUE
+rb_str_vstr_eql(rb_execution_context_t *ec, VALUE self, VALUE other)
+{
+    (void)ec;
+    return rb_str_eql(self, other);
+}
+
+VALUE
+rb_str_vstr_equal(rb_execution_context_t *ec, VALUE self, VALUE other)
+{
+    (void)ec;
+    return rb_str_equal(self, other);
+}
+
+VALUE
+rb_str_vstr_byteindex(rb_execution_context_t *ec, VALUE self, VALUE needle, VALUE offset, VALUE missing)
+{
+    VALUE argv[2] = {needle, offset};
+
+    (void)ec;
+    if (RTEST(missing)) {
+        return rb_str_byteindex_m(1, argv, self);
+    }
+    return rb_str_byteindex_m(2, argv, self);
+}
+
 static inline const char *
 rb_jit_vstr_ptr(const rb_jit_vstr_t *slice)
 {
@@ -11644,59 +11832,6 @@ rb_jit_vstr_length(const rb_jit_vstr_t *slice)
     return slice->len;
 }
 
-static inline VALUE
-rb_jit_vstr_fake_value(const rb_jit_vstr_t *slice, struct RString *fake_str)
-{
-    return rb_jit_vstr_fake_string(slice, fake_str);
-}
-
-static inline void
-rb_jit_vstr_bounds(const rb_jit_vstr_t *slice, const char **start, const char **end)
-{
-    *start = rb_jit_vstr_ptr(slice);
-    *end = *start + slice->len;
-}
-
-long
-rb_jit_vstr_measure0(const rb_jit_vstr_t *slice, long op)
-{
-    struct RString fake_str = {RBASIC_INIT};
-    const char *start;
-    const char *end;
-
-    switch (op) {
-      case RB_JIT_VSTR_MEASURE_TRIM_LEFT_BEG:
-        rb_jit_vstr_bounds(slice, &start, &end);
-        return lstrip_offset(slice->base, start, end, rb_jit_vstr_enc(slice));
-      case RB_JIT_VSTR_MEASURE_TRIM_RIGHT_END:
-        rb_jit_vstr_bounds(slice, &start, &end);
-        return slice->len - rstrip_offset(slice->base, start, end, rb_jit_vstr_enc(slice));
-      case RB_JIT_VSTR_MEASURE_CHOMP_DROP:
-        return slice->len - chompped_length(rb_jit_vstr_fake_value(slice, &fake_str), rb_rs);
-      case RB_JIT_VSTR_MEASURE_CHOP_DROP:
-        return slice->len - chopped_length(rb_jit_vstr_fake_value(slice, &fake_str));
-    }
-
-    rb_bug("unknown rb_jit_vstr_measure0 op: %ld", op);
-    return 0;
-}
-
-long
-rb_jit_vstr_measure1(const rb_jit_vstr_t *slice, VALUE arg, long op)
-{
-    struct RString fake_str = {RBASIC_INIT};
-
-    switch (op) {
-      case RB_JIT_VSTR_MEASURE_DELETE_PREFIX_DROP:
-        return deleted_prefix_length(rb_jit_vstr_fake_value(slice, &fake_str), arg);
-      case RB_JIT_VSTR_MEASURE_DELETE_SUFFIX_DROP:
-        return deleted_suffix_length(rb_jit_vstr_fake_value(slice, &fake_str), arg);
-    }
-
-    rb_bug("unknown rb_jit_vstr_measure1 op: %ld", op);
-    return 0;
-}
-
 rb_jit_vstr_t *
 rb_jit_vstr_subseq(rb_jit_vstr_t *out, const rb_jit_vstr_t *slice, long off, long len)
 {
@@ -11716,53 +11851,7 @@ rb_jit_vstr_materialize(const rb_jit_vstr_t *slice)
     return rb_str_subseq(slice->base, slice->off, slice->len);
 }
 
-VALUE
-rb_jit_vstr_start_with(const rb_jit_vstr_t *slice, VALUE prefix)
-{
-    struct RString fake_str = {RBASIC_INIT};
-    VALUE str = rb_jit_vstr_fake_string(slice, &fake_str);
-
-    if (RSTRING_LEN(prefix) == 0) return Qtrue;
-    return RBOOL(deleted_prefix_length(str, prefix) > 0);
-}
-
-VALUE
-rb_jit_vstr_end_with(const rb_jit_vstr_t *slice, VALUE suffix)
-{
-    struct RString fake_str = {RBASIC_INIT};
-    VALUE str = rb_jit_vstr_fake_string(slice, &fake_str);
-
-    if (RSTRING_LEN(suffix) == 0) return Qtrue;
-    return RBOOL(deleted_suffix_length(str, suffix) > 0);
-}
-
-VALUE
-rb_jit_vstr_eql(const rb_jit_vstr_t *slice, VALUE other)
-{
-    struct RString fake_str = {RBASIC_INIT};
-    return rb_str_eql_internal(rb_jit_vstr_fake_string(slice, &fake_str), other);
-}
-
-VALUE
-rb_jit_vstr_equal(const rb_jit_vstr_t *slice, VALUE other)
-{
-    return rb_jit_vstr_eql(slice, other);
-}
-
-VALUE
-rb_jit_vstr_byteindex(const rb_jit_vstr_t *slice, VALUE needle, long initpos)
-{
-    struct RString fake_str = {RBASIC_INIT};
-    VALUE str = rb_jit_vstr_fake_string(slice, &fake_str);
-    long pos = initpos;
-
-    if (pos < 0 ? (pos += slice->len) < 0 : pos > slice->len) {
-        return Qnil;
-    }
-
-    pos = rb_str_byteindex(str, needle, pos);
-    return pos >= 0 ? LONG2NUM(pos) : Qnil;
-}
+#include "string_zjit.inc.c"
 
 void
 rb_str_setter(VALUE val, ID id, VALUE *var)
